@@ -419,7 +419,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
               ),
               title: Text(u.displayName),
-              subtitle: Text(u.userId),
               onTap: () async {
                 await controller.createDm(u.userId, roomTitle: u.displayName);
                 if (!context.mounted) return;

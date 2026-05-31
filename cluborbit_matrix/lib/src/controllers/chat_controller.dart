@@ -73,6 +73,7 @@ class ChatController extends ChangeNotifier {
   final IncomingCallSettingsStore _incomingCallSettingsStore;
 
   StreamSubscription<void>? _syncSubscription;
+  bool _isDisposed = false;
 
   bool _loading = false;
   bool _matrixConnecting = false;
@@ -90,6 +91,8 @@ class ChatController extends ChangeNotifier {
   List<ChatParticipant> _typingUsers = const <ChatParticipant>[];
   List<VerificationSession> _verificationSessions =
       const <VerificationSession>[];
+  final Map<String, Set<String>> _deletedForMeMessageIdsByRoom =
+      <String, Set<String>>{};
   ChatEncryptionStatus _activeRoomEncryptionStatus =
       const ChatEncryptionStatus.unencrypted();
   ChatMessage? _replyToMessage;
@@ -650,7 +653,10 @@ class ChatController extends ChangeNotifier {
     _activeRoomTitle = roomTitle;
     _setLoading(true);
     try {
-      _messages = await _matrixService.getRoomMessages(roomId);
+      _messages = _applyDeleteForMeFilter(
+        roomId,
+        await _matrixService.getRoomMessages(roomId),
+      );
       await _matrixService.setReadMarker(roomId);
       _participants = await _matrixService.getRoomParticipants(roomId);
       _typingUsers = await _matrixService.getTypingUsers(roomId);
@@ -921,11 +927,148 @@ class ChatController extends ChangeNotifier {
     );
   }
 
-  Future<void> deleteMessage(String eventId) async {
+  bool _isForbiddenRedactionError(Object error) {
+    final message = error.toString().toUpperCase();
+    return message.contains('M_FORBIDDEN') ||
+        message.contains('HTTP 403') ||
+        message.contains('FORBIDDEN');
+  }
+
+  bool _isRateLimitedError(Object error) {
+    final message = error.toString().toUpperCase();
+    return message.contains('M_LIMIT_EXCEEDED') ||
+        message.contains('TOO MANY REQUESTS');
+  }
+
+  bool _isNotFoundRedactionError(Object error) {
+    final message = error.toString().toUpperCase();
+    return message.contains('M_NOT_FOUND') || message.contains('HTTP 404');
+  }
+
+  void _logDeleteFailure({
+    required String roomId,
+    required Set<String> eventIds,
+    required Object error,
+    StackTrace? stackTrace,
+  }) {
+    debugPrint(
+      '[ChatController.deleteMessages] roomId=$roomId eventIds=${eventIds.join(',')} errorType=${error.runtimeType}',
+    );
+    debugPrint('[ChatController.deleteMessages] error=$error');
+    if (stackTrace != null) {
+      debugPrint('[ChatController.deleteMessages] stack=$stackTrace');
+    }
+  }
+
+  List<ChatMessage> _applyDeleteForMeFilter(
+    String roomId,
+    List<ChatMessage> messages,
+  ) {
+    final hiddenIds = _deletedForMeMessageIdsByRoom[roomId];
+    if (hiddenIds == null || hiddenIds.isEmpty) {
+      return messages;
+    }
+    return messages
+        .where((message) => !hiddenIds.contains(message.id))
+        .toList(growable: false);
+  }
+
+  Future<void> deleteMessagesForMe(List<String> eventIds) async {
     final roomId = _activeRoomId;
-    if (roomId == null) return;
-    await _matrixService.redactEvent(roomId: roomId, eventId: eventId);
-    await openRoom(roomId, roomTitle: _activeRoomTitle);
+    if (roomId == null || eventIds.isEmpty) return;
+    final hiddenIds = _deletedForMeMessageIdsByRoom.putIfAbsent(
+      roomId,
+      () => <String>{},
+    );
+    hiddenIds.addAll(eventIds.where((eventId) => eventId.isNotEmpty));
+
+    final previousReplyTo = _replyToMessage;
+    _messages = _applyDeleteForMeFilter(roomId, _messages);
+    if (previousReplyTo != null && hiddenIds.contains(previousReplyTo.id)) {
+      _replyToMessage = null;
+    }
+    notifyListeners();
+  }
+
+  Future<void> deleteMessages(List<String> eventIds) async {
+    final roomId = _activeRoomId;
+    if (roomId == null || eventIds.isEmpty) return;
+    final uniqueEventIds = eventIds
+        .where((eventId) => eventId.isNotEmpty)
+        .toSet();
+    if (uniqueEventIds.isEmpty) {
+      return;
+    }
+    final remoteEventIds = uniqueEventIds
+        .where((eventId) => !eventId.startsWith('local:'))
+        .toList(growable: false);
+    final localOnlyEventIds = uniqueEventIds
+        .where((eventId) => eventId.startsWith('local:'))
+        .toList(growable: false);
+    final previousMessages = _messages;
+    final previousReplyTo = _replyToMessage;
+
+    _messages = _messages
+        .where((message) => !uniqueEventIds.contains(message.id))
+        .toList(growable: false);
+    if (previousReplyTo != null &&
+        uniqueEventIds.contains(previousReplyTo.id)) {
+      _replyToMessage = null;
+    }
+    notifyListeners();
+
+    try {
+      for (final eventId in remoteEventIds) {
+        await _matrixService.redactEvent(roomId: roomId, eventId: eventId);
+      }
+      _messages = _applyDeleteForMeFilter(
+        roomId,
+        await _matrixService.getRoomMessages(roomId, allowCache: false),
+      );
+      if (localOnlyEventIds.isNotEmpty) {
+        _messages = _messages
+            .where((message) => !uniqueEventIds.contains(message.id))
+            .toList(growable: false);
+      }
+      notifyListeners();
+    } catch (error, stackTrace) {
+      _logDeleteFailure(
+        roomId: roomId,
+        eventIds: uniqueEventIds,
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (_isForbiddenRedactionError(error) ||
+          _isRateLimitedError(error) ||
+          _isNotFoundRedactionError(error)) {
+        await deleteMessagesForMe(uniqueEventIds.toList(growable: false));
+        final upper = error.toString().toUpperCase();
+        if (upper.contains('M_LIMIT_EXCEEDED') ||
+            upper.contains('TOO MANY REQUESTS')) {
+          _errorNotifier.setError(
+            'Delete for everyone is rate-limited right now. Removed locally instead.',
+          );
+        } else if (upper.contains('M_NOT_FOUND') ||
+            upper.contains('HTTP 404')) {
+          _errorNotifier.setError(
+            'Message was already removed on server. Hidden locally.',
+          );
+        } else {
+          _errorNotifier.setError(
+            'Could not delete for everyone. Removed locally instead.',
+          );
+        }
+        return;
+      }
+      _messages = previousMessages;
+      _replyToMessage = previousReplyTo;
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> deleteMessage(String eventId) async {
+    await deleteMessages(<String>[eventId]);
   }
 
   Future<void> sendReaction(String eventId, String emoji) async {
@@ -1348,7 +1491,10 @@ class ChatController extends ChangeNotifier {
     final roomId = _activeRoomId;
     if (roomId != null) {
       try {
-        _messages = await _matrixService.getRoomMessages(roomId);
+        _messages = _applyDeleteForMeFilter(
+          roomId,
+          await _matrixService.getRoomMessages(roomId),
+        );
       } catch (e) {
         if (!_isTransientNetworkError(e)) {
           _errorNotifier.setError(e.toString());
@@ -1495,7 +1641,16 @@ class ChatController extends ChangeNotifier {
   }
 
   @override
+  void notifyListeners() {
+    if (_isDisposed) {
+      return;
+    }
+    super.notifyListeners();
+  }
+
+  @override
   void dispose() {
+    _isDisposed = true;
     _syncSubscription?.cancel();
     super.dispose();
   }

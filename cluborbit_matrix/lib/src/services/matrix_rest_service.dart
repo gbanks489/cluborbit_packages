@@ -573,6 +573,7 @@ class MatrixRestService {
         _readReceiptsByRoomEvent[roomId] ?? const <String, Set<String>>{};
 
     final eventsById = <String, Map<String, dynamic>>{};
+    final redactedEventIds = <String>{};
     final replacementBodyByTarget = <String, String>{};
     final reactionEventsByTarget = <String, List<Map<String, dynamic>>>{};
 
@@ -598,6 +599,13 @@ class MatrixRestService {
         }
       }
 
+      if (eventType == 'm.room.redaction') {
+        final target = (map['redacts'] ?? '').toString();
+        if (target.isNotEmpty) {
+          redactedEventIds.add(target);
+        }
+      }
+
       if (eventType == 'm.room.message') {
         final content = _asMap(map['content']);
         final relatesTo = _asMap(content['m.relates_to']);
@@ -612,6 +620,7 @@ class MatrixRestService {
       }
     }
 
+    var droppedRedactedLikeEvents = 0;
     final messageEvents =
         chunk
             .map(_asMap)
@@ -628,6 +637,59 @@ class MatrixRestService {
               }
               if (_isProfileAvatarChangeEvent(event)) {
                 return true;
+              }
+              final eventId = (event['event_id'] ?? '').toString();
+              if (redactedEventIds.contains(eventId)) {
+                droppedRedactedLikeEvents++;
+                return false;
+              }
+              final unsigned = _asMap(event['unsigned']);
+              if (unsigned.containsKey('redacted_because') ||
+                  unsigned.containsKey('redacted_by')) {
+                droppedRedactedLikeEvents++;
+                return false;
+              }
+              final content = _asMap(event['content']);
+              final msgType = (content['msgtype'] ?? '').toString().trim();
+              final body = (content['body'] ?? '').toString().trim();
+              final formattedBody = (content['formatted_body'] ?? '')
+                  .toString()
+                  .trim();
+              final relatesTo = _asMap(content['m.relates_to']);
+              final mediaUrl = _mediaUrl(content);
+              final filename = (content['filename'] ?? content['body'] ?? '')
+                  .toString()
+                  .trim();
+              final caption = (content['org.cluborbit.caption'] ?? '')
+                  .toString()
+                  .trim();
+              final newContent = _asMap(content['m.new_content']);
+              final strippedRedactionPayload =
+                  eventType == 'm.room.message' &&
+                  msgType.isEmpty &&
+                  body.isEmpty &&
+                  formattedBody.isEmpty &&
+                  relatesTo.isEmpty &&
+                  (mediaUrl == null || mediaUrl.trim().isEmpty) &&
+                  filename.isEmpty &&
+                  caption.isEmpty &&
+                  newContent.isEmpty;
+              final strippedMediaPayload =
+                  eventType == 'm.room.message' &&
+                  (msgType == 'm.image' ||
+                      msgType == 'm.video' ||
+                      msgType == 'm.file') &&
+                  body.isEmpty &&
+                  (mediaUrl == null || mediaUrl.trim().isEmpty) &&
+                  filename.isEmpty &&
+                  caption.isEmpty;
+              if (strippedRedactionPayload) {
+                droppedRedactedLikeEvents++;
+                return false;
+              }
+              if (strippedMediaPayload) {
+                droppedRedactedLikeEvents++;
+                return false;
               }
               return eventType == 'm.room.message' &&
                   (_asMap(event['content'])['m.relates_to']
@@ -659,6 +721,7 @@ class MatrixRestService {
       }
     }
 
+    var droppedEmptyMessagePayloads = 0;
     final messages = <ChatMessage>[];
     for (
       var messageIndex = 0;
@@ -826,6 +889,21 @@ class MatrixRestService {
             : null,
       };
 
+      if (!isTimelineOnlyStateEvent) {
+        final hasRenderableText = _stripForwardPrefix(
+          effectiveBody,
+        ).trim().isNotEmpty;
+        final hasRenderableMedia =
+            (mediaUrl ?? '').trim().isNotEmpty ||
+            (thumbnailUrl ?? '').trim().isNotEmpty ||
+            filename.trim().isNotEmpty ||
+            caption.isNotEmpty;
+        if (!hasRenderableText && !hasRenderableMedia) {
+          droppedEmptyMessagePayloads++;
+          continue;
+        }
+      }
+
       messages.add(
         ChatMessage(
           id: eventId,
@@ -873,14 +951,15 @@ class MatrixRestService {
       'limit': limit,
       'chunkEvents': chunk.length,
       'messageCount': messages.length,
+      'droppedRedactedLikeEvents': droppedRedactedLikeEvents,
+      'droppedEmptyMessagePayloads': droppedEmptyMessagePayloads,
     });
 
     final existingCached =
         _cachedMessagesByRoom[roomId] ?? const <ChatMessage>[];
-    final mergedMessages = _mergeCachedRoomMessages(
-      existing: existingCached,
-      incoming: messages,
-    );
+    final mergedMessages = allowCache
+        ? _mergeCachedRoomMessages(existing: existingCached, incoming: messages)
+        : _mergeFreshRoomMessages(existing: existingCached, incoming: messages);
     _cachedMessagesByRoom[roomId] = mergedMessages;
     await _persistCache();
 
@@ -1224,7 +1303,27 @@ class MatrixRestService {
     required String eventId,
   }) async {
     await initialize();
-    await _core.redact(roomId: roomId, eventId: eventId);
+    if (kDebugMode) {
+      debugPrint(
+        '[MatrixRestService.redactEvent] roomId=$roomId eventId=$eventId start',
+      );
+    }
+    try {
+      await _core.redact(roomId: roomId, eventId: eventId);
+      if (kDebugMode) {
+        debugPrint(
+          '[MatrixRestService.redactEvent] roomId=$roomId eventId=$eventId success',
+        );
+      }
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[MatrixRestService.redactEvent] roomId=$roomId eventId=$eventId failed error=$error',
+        );
+        debugPrint('[MatrixRestService.redactEvent] stack=$stackTrace');
+      }
+      rethrow;
+    }
   }
 
   Future<void> sendReaction({
@@ -2587,6 +2686,35 @@ class MatrixRestService {
     return merged;
   }
 
+  List<ChatMessage> _mergeFreshRoomMessages({
+    required List<ChatMessage> existing,
+    required List<ChatMessage> incoming,
+  }) {
+    if (incoming.isEmpty) {
+      return List<ChatMessage>.from(existing)
+        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    }
+
+    // For network refreshes, server results are authoritative for remote
+    // events. Preserve only local optimistic items that have not been replaced.
+    final byId = <String, ChatMessage>{
+      for (final message in incoming)
+        if (message.id.isNotEmpty) message.id: message,
+    };
+
+    for (final message in existing) {
+      final id = message.id;
+      if (id.isEmpty || !id.startsWith(_localMessagePrefix)) {
+        continue;
+      }
+      byId.putIfAbsent(id, () => message);
+    }
+
+    final merged = byId.values.toList(growable: false)
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return merged;
+  }
+
   List<ChatThread> _mergeThreadDelta({
     required List<ChatThread> existing,
     required List<ChatThread> delta,
@@ -3694,7 +3822,21 @@ class MatrixRestService {
   Map<String, dynamic>? _latestMessageEvent(List<dynamic> timelineEvents) {
     final messages = timelineEvents
         .map(_asMap)
-        .where((event) => (event['type'] ?? '').toString() == 'm.room.message')
+        .where((event) {
+          if ((event['type'] ?? '').toString() != 'm.room.message') {
+            return false;
+          }
+          final unsigned = _asMap(event['unsigned']);
+          if (unsigned.containsKey('redacted_because') ||
+              unsigned.containsKey('redacted_by')) {
+            return false;
+          }
+          final content = _asMap(event['content']);
+          final msgType = (content['msgtype'] ?? '').toString().trim();
+          final body = (content['body'] ?? '').toString().trim();
+          final relatesTo = _asMap(content['m.relates_to']);
+          return msgType.isNotEmpty || body.isNotEmpty || relatesTo.isNotEmpty;
+        })
         .toList(growable: false);
     if (messages.isEmpty) return null;
     messages.sort((a, b) => _eventTimestamp(a).compareTo(_eventTimestamp(b)));
