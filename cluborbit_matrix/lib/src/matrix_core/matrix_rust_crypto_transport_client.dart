@@ -215,6 +215,11 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
   }
 
   @override
+  Future<void> leaveRoom(String roomId) {
+    return _fallback.leaveRoom(roomId);
+  }
+
+  @override
   Future<void> setRoomAvatar(String roomId, String mxcUrl) {
     return _fallback.setRoomAvatar(roomId, mxcUrl);
   }

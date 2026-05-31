@@ -84,6 +84,7 @@ abstract class MatrixTransportClient {
   Future<List<dynamic>> getStateEvents(String roomId);
   Future<Map<String, dynamic>> getMembers(String roomId);
   Future<void> joinRoom(String roomId);
+  Future<void> leaveRoom(String roomId);
   Future<void> setRoomAvatar(String roomId, String mxcUrl);
 
   Future<void> setHttpPusher({

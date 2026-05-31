@@ -334,6 +334,15 @@ class MatrixLowLevelClient implements MatrixTransportClient {
     );
   }
 
+  Future<void> leaveRoom(String roomId) async {
+    await _requestJson(
+      method: 'POST',
+      uri: _clientUri('/rooms/$roomId/leave'),
+      headers: _authHeaders(),
+      body: jsonEncode(<String, dynamic>{}),
+    );
+  }
+
   Future<void> setRoomAvatar(String roomId, String mxcUrl) async {
     await _requestJson(
       method: 'PUT',

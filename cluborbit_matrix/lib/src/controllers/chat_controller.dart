@@ -10,6 +10,7 @@ import 'package:cluborbit_models/cluborbit_models.dart';
 import 'package:clubcommon/clubcommon.dart';
 
 import '../services/auth_service.dart';
+import '../services/chat_thread_preferences_store.dart';
 import '../services/connectivity_service.dart';
 import '../services/incoming_call_settings_store.dart';
 import '../services/matrix_rest_service.dart';
@@ -63,6 +64,7 @@ class ChatController extends ChangeNotifier {
        _incomingCallSettingsStore =
            incomingCallSettingsStore ?? IncomingCallSettingsStore() {
     unawaited(_hydrateIncomingCallUxSettings());
+    unawaited(_hydrateThreadPreferences());
   }
 
   final AuthService _authService;
@@ -71,6 +73,8 @@ class ChatController extends ChangeNotifier {
   final ErrorNotifier _errorNotifier;
   final UserProfileService _userProfileService;
   final IncomingCallSettingsStore _incomingCallSettingsStore;
+  final ChatThreadPreferencesStore _threadPreferencesStore =
+      ChatThreadPreferencesStore();
 
   StreamSubscription<void>? _syncSubscription;
   bool _isDisposed = false;
@@ -93,6 +97,9 @@ class ChatController extends ChangeNotifier {
       const <VerificationSession>[];
   final Map<String, Set<String>> _deletedForMeMessageIdsByRoom =
       <String, Set<String>>{};
+  Set<String> _mutedRoomIds = const <String>{};
+  Set<String> _pinnedRoomIds = const <String>{};
+  Set<String> _forcedUnreadRoomIds = const <String>{};
   ChatEncryptionStatus _activeRoomEncryptionStatus =
       const ChatEncryptionStatus.unencrypted();
   ChatMessage? _replyToMessage;
@@ -141,17 +148,30 @@ class ChatController extends ChangeNotifier {
   }
 
   List<ChatThread> get threads {
-    if (_query.trim().isEmpty) {
-      return _threads;
-    }
-    final q = _query.toLowerCase();
-    return _threads
-        .where(
-          (t) =>
-              t.title.toLowerCase().contains(q) ||
-              (t.lastMessage ?? '').toLowerCase().contains(q),
-        )
+    final query = _query.trim().toLowerCase();
+    final filtered = query.isEmpty
+        ? _threads
+        : _threads
+              .where(
+                (thread) =>
+                    thread.title.toLowerCase().contains(query) ||
+                    (thread.lastMessage ?? '').toLowerCase().contains(query),
+              )
+              .toList(growable: false);
+
+    final withLocalPrefs = filtered
+        .map(_applyThreadPreferences)
         .toList(growable: false);
+    final indexed = withLocalPrefs.indexed.toList(growable: false)
+      ..sort((a, b) {
+        final aPinned = _pinnedRoomIds.contains(a.$2.id);
+        final bPinned = _pinnedRoomIds.contains(b.$2.id);
+        if (aPinned != bPinned) {
+          return aPinned ? -1 : 1;
+        }
+        return a.$1.compareTo(b.$1);
+      });
+    return indexed.map((entry) => entry.$2).toList(growable: false);
   }
 
   List<ChatParticipant> get searchedUsers => _searchedUsers;
@@ -209,6 +229,25 @@ class ChatController extends ChangeNotifier {
     } catch (e, s) {
       debugPrint('Failed to load incoming call UX settings: $e\n$s');
     }
+  }
+
+  Future<void> _hydrateThreadPreferences() async {
+    try {
+      final snapshot = await _threadPreferencesStore.loadAll();
+      _mutedRoomIds = Set<String>.from(snapshot.mutedRoomIds);
+      _pinnedRoomIds = Set<String>.from(snapshot.pinnedRoomIds);
+      _forcedUnreadRoomIds = Set<String>.from(snapshot.forcedUnreadRoomIds);
+      notifyListeners();
+    } catch (e, s) {
+      debugPrint('Failed to load chat thread preferences: $e\n$s');
+    }
+  }
+
+  ChatThread _applyThreadPreferences(ChatThread thread) {
+    if (_forcedUnreadRoomIds.contains(thread.id) && thread.unreadCount == 0) {
+      return thread.copyWith(unreadCount: 1);
+    }
+    return thread;
   }
 
   Future<void> _persistIncomingCallUxSettings() async {
@@ -658,6 +697,9 @@ class ChatController extends ChangeNotifier {
         await _matrixService.getRoomMessages(roomId),
       );
       await _matrixService.setReadMarker(roomId);
+      if (_forcedUnreadRoomIds.remove(roomId)) {
+        unawaited(_threadPreferencesStore.setForcedUnread(roomId, false));
+      }
       _participants = await _matrixService.getRoomParticipants(roomId);
       _typingUsers = await _matrixService.getTypingUsers(roomId);
       _activeRoomEncryptionStatus = await _matrixService
@@ -915,6 +957,122 @@ class ChatController extends ChangeNotifier {
 
   ChatParticipant? cachedDirectMessageCounterpart(String roomId) {
     return _matrixService.cachedDirectMessageCounterpart(roomId);
+  }
+
+  bool isRoomMuted(String roomId) {
+    return _mutedRoomIds.contains(roomId);
+  }
+
+  bool isRoomPinned(String roomId) {
+    return _pinnedRoomIds.contains(roomId);
+  }
+
+  bool hasForcedUnreadMark(String roomId) {
+    return _forcedUnreadRoomIds.contains(roomId);
+  }
+
+  Future<void> setRoomMuted(String roomId, bool muted) async {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return;
+    }
+
+    final next = Set<String>.from(_mutedRoomIds);
+    if (muted) {
+      next.add(normalizedRoomId);
+    } else {
+      next.remove(normalizedRoomId);
+    }
+    _mutedRoomIds = next;
+    notifyListeners();
+
+    try {
+      await _threadPreferencesStore.setMuted(normalizedRoomId, muted);
+    } catch (e) {
+      _errorNotifier.setError(e.toString());
+      rethrow;
+    }
+  }
+
+  Future<void> setRoomPinned(String roomId, bool pinned) async {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return;
+    }
+
+    final next = Set<String>.from(_pinnedRoomIds);
+    if (pinned) {
+      next.add(normalizedRoomId);
+    } else {
+      next.remove(normalizedRoomId);
+    }
+    _pinnedRoomIds = next;
+    notifyListeners();
+
+    try {
+      await _threadPreferencesStore.setPinned(normalizedRoomId, pinned);
+    } catch (e) {
+      _errorNotifier.setError(e.toString());
+      rethrow;
+    }
+  }
+
+  Future<void> markRoomAsUnread(String roomId) async {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return;
+    }
+    if (_forcedUnreadRoomIds.contains(normalizedRoomId)) {
+      return;
+    }
+
+    _forcedUnreadRoomIds = Set<String>.from(_forcedUnreadRoomIds)
+      ..add(normalizedRoomId);
+    notifyListeners();
+
+    try {
+      await _threadPreferencesStore.setForcedUnread(normalizedRoomId, true);
+    } catch (e) {
+      _errorNotifier.setError(e.toString());
+      rethrow;
+    }
+  }
+
+  Future<void> leaveRoom(String roomId) async {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return;
+    }
+
+    _setLoading(true);
+    try {
+      await _matrixService.leaveRoom(normalizedRoomId);
+      _mutedRoomIds = Set<String>.from(_mutedRoomIds)..remove(normalizedRoomId);
+      _pinnedRoomIds = Set<String>.from(_pinnedRoomIds)
+        ..remove(normalizedRoomId);
+      _forcedUnreadRoomIds = Set<String>.from(_forcedUnreadRoomIds)
+        ..remove(normalizedRoomId);
+      await _threadPreferencesStore.removeRoom(normalizedRoomId);
+
+      if (_activeRoomId == normalizedRoomId) {
+        _activeRoomId = null;
+        _activeRoomTitle = null;
+        _messages = const <ChatMessage>[];
+        _participants = const <ChatParticipant>[];
+        _typingUsers = const <ChatParticipant>[];
+        _verificationSessions = const <VerificationSession>[];
+        _activeRoomEncryptionStatus = const ChatEncryptionStatus.unencrypted();
+      }
+
+      await loadThreads();
+      _errorNotifier.clear();
+    } catch (e) {
+      _errorNotifier.setError(e.toString());
+      rethrow;
+    } finally {
+      _setLoading(false);
+      notifyListeners();
+    }
   }
 
   Future<List<ChatParticipant>> getRoomParticipants(

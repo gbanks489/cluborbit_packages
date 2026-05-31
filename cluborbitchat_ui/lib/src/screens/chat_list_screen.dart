@@ -11,6 +11,8 @@ import 'package:provider/provider.dart';
 import '../app/playerchat_router.dart';
 import '../widgets/playerui_search_bar.dart';
 
+enum _ThreadAction { mute, unmute, pin, unpin, leave, markUnread }
+
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
 
@@ -145,6 +147,232 @@ class _ChatListScreenState extends State<ChatListScreen> {
       }
       _refreshVisibleDmPresence(controller);
     });
+  }
+
+  List<_ThreadAction> _actionsForThread(
+    ChatController controller,
+    ChatThread thread,
+  ) {
+    final isMuted = controller.isRoomMuted(thread.id);
+    final isPinned = controller.isRoomPinned(thread.id);
+    return <_ThreadAction>[
+      isMuted ? _ThreadAction.unmute : _ThreadAction.mute,
+      isPinned ? _ThreadAction.unpin : _ThreadAction.pin,
+      _ThreadAction.markUnread,
+      _ThreadAction.leave,
+    ];
+  }
+
+  Future<void> _handleThreadAction(
+    BuildContext context,
+    ChatController controller,
+    ChatThread thread,
+    _ThreadAction action,
+  ) async {
+    switch (action) {
+      case _ThreadAction.mute:
+        await controller.setRoomMuted(thread.id, true);
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Muted ${thread.title}')));
+        return;
+      case _ThreadAction.unmute:
+        await controller.setRoomMuted(thread.id, false);
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Unmuted ${thread.title}')));
+        return;
+      case _ThreadAction.pin:
+        await controller.setRoomPinned(thread.id, true);
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Pinned ${thread.title}')));
+        return;
+      case _ThreadAction.unpin:
+        await controller.setRoomPinned(thread.id, false);
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Unpinned ${thread.title}')));
+        return;
+      case _ThreadAction.markUnread:
+        final alreadyUnread =
+            thread.unreadCount > 0 || controller.hasForcedUnreadMark(thread.id);
+        if (alreadyUnread) {
+          return;
+        }
+        await controller.markRoomAsUnread(thread.id);
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Marked ${thread.title} as unread')),
+        );
+        return;
+      case _ThreadAction.leave:
+        final shouldLeave = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) {
+            return AlertDialog(
+              title: const Text('Leave chat?'),
+              content: Text('You will leave ${thread.title}.'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(true),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFB3261E),
+                  ),
+                  child: const Text('Leave'),
+                ),
+              ],
+            );
+          },
+        );
+        if (shouldLeave != true) {
+          return;
+        }
+        await controller.leaveRoom(thread.id);
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Left ${thread.title}')));
+        return;
+    }
+  }
+
+  Future<void> _showThreadActionSheet(
+    BuildContext context,
+    ChatController controller,
+    ChatThread thread,
+  ) {
+    final actions = _actionsForThread(controller, thread);
+    return showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: PlayerUiSignalTheme.secondaryColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (bottomSheetContext) {
+        final alreadyUnread =
+            thread.unreadCount > 0 || controller.hasForcedUnreadMark(thread.id);
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              Container(
+                width: 38,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.black26,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    _AvatarThumb(
+                      imageUrl: thread.avatarUrl,
+                      initials: thread.title.isEmpty
+                          ? '?'
+                          : thread.title[0].toUpperCase(),
+                      size: 42,
+                      backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
+                      useGroupPlaceholder: thread.type == ChatType.group,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        thread.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: 'Poppins',
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: PlayerUiSignalTheme.primaryDarkColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Divider(
+                height: 1,
+                thickness: 1,
+                color: Colors.black.withAlpha(16),
+              ),
+              const SizedBox(height: 4),
+              ...actions.map((action) {
+                final isLeave = action == _ThreadAction.leave;
+                final disabled =
+                    action == _ThreadAction.markUnread && alreadyUnread;
+                return ListTile(
+                  enabled: !disabled,
+                  leading: Icon(
+                    _threadActionIcon(action),
+                    color: isLeave
+                        ? const Color(0xFFB3261E)
+                        : PlayerUiSignalTheme.primaryDarkColor,
+                  ),
+                  title: Text(
+                    _threadActionLabel(action),
+                    style: TextStyle(
+                      color: isLeave
+                          ? const Color(0xFFB3261E)
+                          : PlayerUiSignalTheme.primaryDarkColor,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  onTap: disabled
+                      ? null
+                      : () async {
+                          Navigator.of(bottomSheetContext).pop();
+                          await _handleThreadAction(
+                            context,
+                            controller,
+                            thread,
+                            action,
+                          );
+                        },
+                );
+              }),
+              const SizedBox(height: 10),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  String _threadActionLabel(_ThreadAction action) {
+    return switch (action) {
+      _ThreadAction.mute => 'Mute chat',
+      _ThreadAction.unmute => 'Unmute chat',
+      _ThreadAction.pin => 'Pin to top',
+      _ThreadAction.unpin => 'Unpin chat',
+      _ThreadAction.leave => 'Leave chat',
+      _ThreadAction.markUnread => 'Mark as unread',
+    };
+  }
+
+  IconData _threadActionIcon(_ThreadAction action) {
+    return switch (action) {
+      _ThreadAction.mute => Icons.notifications_off_outlined,
+      _ThreadAction.unmute => Icons.notifications_active_outlined,
+      _ThreadAction.pin => Icons.push_pin_outlined,
+      _ThreadAction.unpin => Icons.push_pin,
+      _ThreadAction.leave => Icons.logout,
+      _ThreadAction.markUnread => Icons.mark_chat_unread_outlined,
+    };
   }
 
   @override
@@ -452,6 +680,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final isOnline =
         counterpartUserId != null &&
         (controller.cachedUserPresence(counterpartUserId)?.isOnline ?? false);
+    final isMuted = controller.isRoomMuted(thread.id);
+    final isPinned = controller.isRoomPinned(thread.id);
 
     return ListTile(
       tileColor: PlayerUiSignalTheme.mobileSearchColor.withAlpha(90),
@@ -464,7 +694,26 @@ class _ChatListScreenState extends State<ChatListScreen> {
         showPresence: thread.type == ChatType.dm && !isInvited,
         isOnline: isOnline,
       ),
-      title: Text(thread.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              thread.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (isPinned)
+            const Padding(
+              padding: EdgeInsets.only(left: 6),
+              child: Icon(
+                Icons.push_pin,
+                size: 14,
+                color: PlayerUiSignalTheme.primaryDarkColor,
+              ),
+            ),
+        ],
+      ),
       subtitle: Text(
         subtitleText,
         maxLines: 2,
@@ -476,9 +725,23 @@ class _ChatListScreenState extends State<ChatListScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            _formatTimeAgo(thread.updatedAt),
-            style: const TextStyle(fontSize: 12, color: Colors.white54),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isMuted)
+                const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: Icon(
+                    Icons.notifications_off_outlined,
+                    size: 14,
+                    color: Colors.white54,
+                  ),
+                ),
+              Text(
+                _formatTimeAgo(thread.updatedAt),
+                style: const TextStyle(fontSize: 12, color: Colors.white54),
+              ),
+            ],
           ),
           const SizedBox(height: 4),
           Row(
@@ -506,6 +769,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
           ),
         ],
       ),
+      onLongPress: () {
+        unawaited(_showThreadActionSheet(context, controller, thread));
+      },
       onTap: () async {
         if (isInvited) {
           showDialog<void>(

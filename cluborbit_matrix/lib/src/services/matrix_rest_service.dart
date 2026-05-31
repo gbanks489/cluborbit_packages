@@ -123,7 +123,20 @@ class MatrixRestService {
     this.transportFactory,
   }) : _homeserver = homeserver.endsWith('/')
            ? homeserver.substring(0, homeserver.length - 1)
-           : homeserver;
+           : homeserver,
+       _core =
+           transportFactory?.call(
+             homeserver: homeserver.endsWith('/')
+                 ? homeserver.substring(0, homeserver.length - 1)
+                 : homeserver,
+             clientName: clientName,
+           ) ??
+           MatrixRustCryptoTransportClient(
+             homeserver: homeserver.endsWith('/')
+                 ? homeserver.substring(0, homeserver.length - 1)
+                 : homeserver,
+             clientName: clientName,
+           );
 
   final String _homeserver;
   final String clientName;
@@ -140,7 +153,7 @@ class MatrixRestService {
   final StreamController<void> _callMediaUpdates =
       StreamController<void>.broadcast();
 
-  late final MatrixTransportClient _core;
+  final MatrixTransportClient _core;
   bool _initialized = false;
   int _syncLoopGeneration = 0;
 
@@ -234,15 +247,6 @@ class MatrixRestService {
 
   Future<void> initialize() async {
     if (_initialized) return;
-    _core =
-        transportFactory?.call(
-          homeserver: _homeserver,
-          clientName: clientName,
-        ) ??
-        MatrixRustCryptoTransportClient(
-          homeserver: _homeserver,
-          clientName: clientName,
-        );
     await _ensureVideoRenderers();
     _initialized = true;
   }
@@ -521,6 +525,31 @@ class MatrixRestService {
     } catch (_) {
       return false;
     }
+  }
+
+  Future<void> leaveRoom(String roomId) async {
+    await initialize();
+    await _core.leaveRoom(roomId);
+
+    _cachedThreads = _cachedThreads
+        .where((thread) => thread.id != roomId)
+        .toList(growable: false);
+    _cachedMessagesByRoom.remove(roomId);
+    _didServeCachedMessagesRooms.remove(roomId);
+    _roomMessageRefreshInFlight.remove(roomId);
+    _roomMessageRefreshAt.remove(roomId);
+    _typingUsersByRoom.remove(roomId);
+    _participantsCache.remove(roomId);
+    _participantsCacheAt.remove(roomId);
+    _lastMessagePreviewByRoom.remove(roomId);
+    _lastMessageSenderByRoom.remove(roomId);
+    _lastMessageTimeByRoom.remove(roomId);
+    _threadIntegrityRepairInFlight.remove(roomId);
+    _userSearchCache.clear();
+
+    await _persistCache();
+    await _refreshSync(fullState: false);
+    _emitSyncUpdate();
   }
 
   Future<List<ChatMessage>> getRoomMessages(
