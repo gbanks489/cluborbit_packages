@@ -1,0 +1,10 @@
+name: cluborbit_models
+description: Shared chat models used by PlayerChat UI and Matrix connectivity packages.
+version: 0.0.1
+publish_to: 'none'
+
+environment:
+  sdk: ^3.11.1
+
+dev_dependencies:
+  lints: ^6.0.0
