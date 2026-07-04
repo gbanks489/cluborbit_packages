@@ -15,7 +15,7 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
        _fallback =
            fallbackTransport ?? MatrixLowLevelClient(homeserver: homeserver);
 
-  static const String _channelName = 'playerchat_matrix/matrix_rust_crypto';
+  static const String _channelName = 'cluborbit_matrix/matrix_native';
 
   final String _homeserver;
   final String _clientName;
@@ -24,6 +24,9 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
 
   bool? _nativeAvailable;
   bool _usingNativeSession = false;
+  // Keep simple REST operations on the Dart HTTP transport.
+  // Native/Rust should focus on sync, crypto, verification and timeline/state.
+
   String? _currentUserId;
   String? _accessToken;
   String? _sinceToken;
@@ -205,6 +208,11 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
   }
 
   @override
+  Future<String> resolveRoomAlias(String roomAlias) {
+    return _fallback.resolveRoomAlias(roomAlias);
+  }
+
+  @override
   Future<Map<String, dynamic>> getMembers(String roomId) {
     return _fallback.getMembers(roomId);
   }
@@ -233,7 +241,7 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
     required String url,
     String lang = 'en',
     String profileTag = 'mobile',
-    String format = 'event_id_only',
+    String? format,
   }) {
     return _fallback.setHttpPusher(
       pushKey: pushKey,
@@ -258,35 +266,11 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
     String body, {
     String? replyToEventId,
   }) async {
-    if (_usingNativeSession) {
-      final nativeResponse = await _invokeMap('sendText', <String, dynamic>{
-        ..._baseArgs,
-        'roomId': roomId,
-        'body': body,
-        'replyToEventId': replyToEventId,
-      });
-      final eventId = _normalize(nativeResponse?['eventId']?.toString());
-      if (eventId != null) {
-        return eventId;
-      }
-    }
     return _fallback.sendText(roomId, body, replyToEventId: replyToEventId);
   }
 
   @override
   Future<String> editText(String roomId, String eventId, String newBody) async {
-    if (_usingNativeSession) {
-      final nativeResponse = await _invokeMap('editText', <String, dynamic>{
-        ..._baseArgs,
-        'roomId': roomId,
-        'eventId': eventId,
-        'newBody': newBody,
-      });
-      final newEventId = _normalize(nativeResponse?['eventId']?.toString());
-      if (newEventId != null) {
-        return newEventId;
-      }
-    }
     return _fallback.editText(roomId, eventId, newBody);
   }
 
@@ -392,22 +376,6 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
     required bool isDirect,
     List<Map<String, dynamic>> initialState = const <Map<String, dynamic>>[],
   }) async {
-    if (_usingNativeSession) {
-      final nativeArgs = <String, dynamic>{
-        ..._baseArgs,
-        'invite': invite,
-        'isDirect': isDirect,
-        'initialState': initialState,
-      };
-      if (name.trim().isNotEmpty) {
-        nativeArgs['name'] = name;
-      }
-      final nativeResponse = await _invokeMap('createRoom', nativeArgs);
-      final roomId = _normalize(nativeResponse?['roomId']?.toString());
-      if (roomId != null) {
-        return roomId;
-      }
-    }
     return _fallback.createRoom(
       name: name,
       invite: invite,
@@ -429,31 +397,73 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
 
   @override
   Future<String> startVerification({required String userId}) {
+    if (_usingNativeSession) {
+      return _invokeNativeVerificationStart(userId);
+    }
     return _fallback.startVerification(userId: userId);
   }
 
   @override
-  Future<void> acceptVerification(String verificationId) {
+  Future<void> acceptVerification(String verificationId) async {
+    if (_usingNativeSession) {
+      final handled = await _invokeNativeVerificationVoid(
+        'acceptVerification',
+        verificationId,
+      );
+      if (handled) {
+        return;
+      }
+    }
     return _fallback.acceptVerification(verificationId);
   }
 
   @override
-  Future<void> rejectVerification(String verificationId) {
+  Future<void> rejectVerification(String verificationId) async {
+    if (_usingNativeSession) {
+      final handled = await _invokeNativeVerificationVoid(
+        'rejectVerification',
+        verificationId,
+      );
+      if (handled) {
+        return;
+      }
+    }
     return _fallback.rejectVerification(verificationId);
   }
 
   @override
-  Future<void> acceptSas(String verificationId) {
+  Future<void> acceptSas(String verificationId) async {
+    if (_usingNativeSession) {
+      final handled = await _invokeNativeVerificationVoid(
+        'acceptSas',
+        verificationId,
+      );
+      if (handled) {
+        return;
+      }
+    }
     return _fallback.acceptSas(verificationId);
   }
 
   @override
-  Future<void> rejectSas(String verificationId) {
+  Future<void> rejectSas(String verificationId) async {
+    if (_usingNativeSession) {
+      final handled = await _invokeNativeVerificationVoid(
+        'rejectSas',
+        verificationId,
+      );
+      if (handled) {
+        return;
+      }
+    }
     return _fallback.rejectSas(verificationId);
   }
 
   @override
   List<Map<String, dynamic>> getVerificationSessions() {
+    if (_usingNativeSession && _nativeAvailable == true) {
+      return _fallback.getVerificationSessions();
+    }
     return _fallback.getVerificationSessions();
   }
 
@@ -473,6 +483,45 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
       return null;
     }
     return trimmed;
+  }
+
+  Future<String> _invokeNativeVerificationStart(String userId) async {
+    final nativeResponse = await _invokeMap(
+      'startVerification',
+      <String, dynamic>{..._baseArgs, 'userId': userId},
+    );
+    final verificationId = _normalize(
+      nativeResponse?['verificationId']?.toString(),
+    );
+    if (verificationId != null) {
+      return verificationId;
+    }
+    return _fallback.startVerification(userId: userId);
+  }
+
+  Future<bool> _invokeNativeVerificationVoid(
+    String method,
+    String verificationId,
+  ) async {
+    if (!await _ensureNativeAvailable()) {
+      return false;
+    }
+    try {
+      await _channel.invokeMethod<void>(method, <String, dynamic>{
+        ..._baseArgs,
+        'verificationId': verificationId,
+      });
+      return true;
+    } on MissingPluginException {
+      _nativeAvailable = false;
+      return false;
+    } on PlatformException catch (error) {
+      if (_isMissingImplementation(error)) {
+        _nativeAvailable = false;
+        return false;
+      }
+      rethrow;
+    }
   }
 
   Future<bool> _ensureNativeAvailable() async {

@@ -120,146 +120,149 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
         ),
         title: const Text('New chat'),
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text('Create direct message', style: TextStyle(fontSize: 16)),
-          const SizedBox(height: 8),
-          _buildDirectMessageSearchField(),
-          const SizedBox(height: 8),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 4),
-            child: Text(
-              'Search by display name',
-              style: TextStyle(
-                color: Colors.white70,
-                fontFamily: 'Poppins',
-                fontSize: 12,
+      body: SafeArea(
+        top: false,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            const Text('Create direct message', style: TextStyle(fontSize: 16)),
+            const SizedBox(height: 8),
+            _buildDirectMessageSearchField(),
+            const SizedBox(height: 8),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4),
+              child: Text(
+                'Search by display name',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontFamily: 'Poppins',
+                  fontSize: 12,
+                ),
               ),
             ),
-          ),
-          if (hasSearchText) ...[
-            const SizedBox(height: 12),
-            if (matrixConnecting)
-              const ListTile(
-                leading: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                title: Text('Syncing chats to search users...'),
-              )
-            else if (_dmSearchLoading)
-              const ListTile(
-                leading: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                title: Text('Searching users...'),
-              )
-            else if (_dmSuggestions.isEmpty)
-              const ListTile(title: Text('No user matches'))
-            else
-              ..._dmSuggestions.map(
-                (user) => ListTile(
-                  tileColor: PlayerUiSignalTheme.mobileSearchColor.withAlpha(
-                    90,
-                  ),
-                  selected: _selectedDmUser?.userId == user.userId,
-                  leading: CircleAvatar(
-                    backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                    backgroundImage:
-                        (user.avatarUrl != null &&
-                            user.avatarUrl!.trim().isNotEmpty)
-                        ? NetworkImage(user.avatarUrl!)
-                        : null,
-                    child:
-                        (user.avatarUrl == null ||
-                            user.avatarUrl!.trim().isEmpty)
-                        ? Text(
-                            user.displayName.isEmpty
-                                ? '?'
-                                : user.displayName[0].toUpperCase(),
-                            style: const TextStyle(
-                              color: PlayerUiSignalTheme.secondaryColor,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          )
-                        : null,
-                  ),
-                  title: Text(user.displayName),
-                  onTap: anyCreateInProgress
-                      ? null
-                      : () => unawaited(_selectDirectMessageUser(user)),
-                ),
-              ),
-          ],
-          const SizedBox(height: 8),
-          const Divider(height: 32),
-          const Text('Create group', style: TextStyle(fontSize: 16)),
-          const SizedBox(height: 8),
-          _buildClubOrbitPromoTile(),
-          const SizedBox(height: 14),
-          Center(child: _buildGroupAvatarPicker()),
-          const SizedBox(height: 12),
-          CommonWidgets.commonTextFieldForLoginSignUP(
-            context: context,
-            controller: _groupNameController,
-            hintText: 'Group name',
-            labelText: 'Group Name',
-          ),
-          const SizedBox(height: 8),
-          _buildGroupMembersField(),
-          const SizedBox(height: 8),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 4),
-            child: Text(
-              'Search by display name and add members to the group',
-              style: TextStyle(
-                color: Colors.white70,
-                fontFamily: 'Poppins',
-                fontSize: 12,
-              ),
-            ),
-          ),
-          if (hasGroupSearchText) ...[
-            const SizedBox(height: 12),
-            if (matrixConnecting)
-              const ListTile(
-                leading: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                title: Text('Syncing chats to search users...'),
-              )
-            else if (_groupMemberSearchLoading)
-              const ListTile(
-                leading: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                title: Text('Searching users...'),
-              )
-            else if (_groupMemberSuggestions.isEmpty)
-              const ListTile(title: Text('No user matches'))
-            else
-              ..._groupMemberSuggestions.map(_buildGroupMemberSuggestionTile),
-          ],
-          const SizedBox(height: 8),
-          FilledButton(
-            onPressed: anyCreateInProgress ? null : _handleCreateGroup,
-            child: _creatingGroup
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
+            if (hasSearchText) ...[
+              const SizedBox(height: 12),
+              if (matrixConnecting)
+                const ListTile(
+                  leading: SizedBox(
+                    width: 20,
+                    height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('Create group'),
-          ),
-        ],
+                  ),
+                  title: Text('Syncing chats to search users...'),
+                )
+              else if (_dmSearchLoading)
+                const ListTile(
+                  leading: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  title: Text('Searching users...'),
+                )
+              else if (_dmSuggestions.isEmpty)
+                const ListTile(title: Text('No user matches'))
+              else
+                ..._dmSuggestions.map(
+                  (user) => ListTile(
+                    tileColor: PlayerUiSignalTheme.mobileSearchColor.withAlpha(
+                      90,
+                    ),
+                    selected: _selectedDmUser?.userId == user.userId,
+                    leading: CircleAvatar(
+                      backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
+                      backgroundImage:
+                          (user.avatarUrl != null &&
+                              user.avatarUrl!.trim().isNotEmpty)
+                          ? NetworkImage(user.avatarUrl!)
+                          : null,
+                      child:
+                          (user.avatarUrl == null ||
+                              user.avatarUrl!.trim().isEmpty)
+                          ? Text(
+                              user.displayName.isEmpty
+                                  ? '?'
+                                  : user.displayName[0].toUpperCase(),
+                              style: const TextStyle(
+                                color: PlayerUiSignalTheme.secondaryColor,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            )
+                          : null,
+                    ),
+                    title: Text(user.displayName),
+                    onTap: anyCreateInProgress
+                        ? null
+                        : () => unawaited(_selectDirectMessageUser(user)),
+                  ),
+                ),
+            ],
+            const SizedBox(height: 8),
+            const Divider(height: 32),
+            const Text('Create group', style: TextStyle(fontSize: 16)),
+            const SizedBox(height: 8),
+            _buildClubOrbitPromoTile(),
+            const SizedBox(height: 14),
+            Center(child: _buildGroupAvatarPicker()),
+            const SizedBox(height: 12),
+            CommonWidgets.commonTextFieldForLoginSignUP(
+              context: context,
+              controller: _groupNameController,
+              hintText: 'Group name',
+              labelText: 'Group Name',
+            ),
+            const SizedBox(height: 8),
+            _buildGroupMembersField(),
+            const SizedBox(height: 8),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4),
+              child: Text(
+                'Search by display name and add members to the group',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontFamily: 'Poppins',
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            if (hasGroupSearchText) ...[
+              const SizedBox(height: 12),
+              if (matrixConnecting)
+                const ListTile(
+                  leading: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  title: Text('Syncing chats to search users...'),
+                )
+              else if (_groupMemberSearchLoading)
+                const ListTile(
+                  leading: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  title: Text('Searching users...'),
+                )
+              else if (_groupMemberSuggestions.isEmpty)
+                const ListTile(title: Text('No user matches'))
+              else
+                ..._groupMemberSuggestions.map(_buildGroupMemberSuggestionTile),
+            ],
+            const SizedBox(height: 8),
+            FilledButton(
+              onPressed: anyCreateInProgress ? null : _handleCreateGroup,
+              child: _creatingGroup
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Create group'),
+            ),
+          ],
+        ),
       ),
     );
   }

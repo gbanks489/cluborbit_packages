@@ -13,6 +13,8 @@ class MatrixRestCacheSnapshot {
     required this.readReceiptsByRoomEvent,
     required this.callSnapshot,
     required this.updatedAtMs,
+    required this.lastMessageSenderByRoom,
+    required this.lastMessagePreviewByRoom,
   });
 
   final String? sinceToken;
@@ -23,6 +25,8 @@ class MatrixRestCacheSnapshot {
   final Map<String, Map<String, Set<String>>> readReceiptsByRoomEvent;
   final Map<String, dynamic>? callSnapshot;
   final int updatedAtMs;
+  final Map<String, String> lastMessageSenderByRoom;
+  final Map<String, String> lastMessagePreviewByRoom;
 }
 
 class MatrixRestCacheStore {
@@ -167,6 +171,26 @@ class MatrixRestCacheStore {
           ? callSnapshotRaw.map((k, v) => MapEntry(k.toString(), v))
           : null;
 
+      final senderByRoomRaw = decoded['lastMessageSenderByRoom'];
+      final lastMessageSenderByRoom = <String, String>{};
+      if (senderByRoomRaw is Map) {
+        for (final e in senderByRoomRaw.entries) {
+          final k = e.key.toString();
+          final v = e.value?.toString() ?? '';
+          if (k.isNotEmpty) lastMessageSenderByRoom[k] = v;
+        }
+      }
+
+      final previewByRoomRaw = decoded['lastMessagePreviewByRoom'];
+      final lastMessagePreviewByRoom = <String, String>{};
+      if (previewByRoomRaw is Map) {
+        for (final e in previewByRoomRaw.entries) {
+          final k = e.key.toString();
+          final v = e.value?.toString() ?? '';
+          if (k.isNotEmpty) lastMessagePreviewByRoom[k] = v;
+        }
+      }
+
       return MatrixRestCacheSnapshot(
         sinceToken: sinceToken,
         threads: threads,
@@ -176,6 +200,8 @@ class MatrixRestCacheStore {
         readReceiptsByRoomEvent: readReceiptsByRoomEvent,
         callSnapshot: callSnapshot,
         updatedAtMs: updatedAtMs,
+        lastMessageSenderByRoom: lastMessageSenderByRoom,
+        lastMessagePreviewByRoom: lastMessagePreviewByRoom,
       );
     } catch (_) {
       return null;
@@ -192,6 +218,8 @@ class MatrixRestCacheStore {
     required Map<String, Set<String>> typingUsersByRoom,
     required Map<String, Map<String, Set<String>>> readReceiptsByRoomEvent,
     required Map<String, dynamic>? callSnapshot,
+    required Map<String, String> lastMessageSenderByRoom,
+    required Map<String, String> lastMessagePreviewByRoom,
   }) async {
     final payload = <String, dynamic>{
       'sinceToken': sinceToken,
@@ -222,6 +250,8 @@ class MatrixRestCacheStore {
         ),
       ),
       'callSnapshot': callSnapshot,
+      'lastMessageSenderByRoom': lastMessageSenderByRoom,
+      'lastMessagePreviewByRoom': lastMessagePreviewByRoom,
     };
     await _storage.write(
       key: _key(databaseName: databaseName, userId: userId),

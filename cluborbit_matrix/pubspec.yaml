@@ -28,6 +28,7 @@ dependencies:
   google_fonts: ^6.3.1
   flutter_svg: ^2.2.0
   image_picker: ^1.1.2
+  image: any
   cached_network_image: ^3.4.1
   emoji_picker_flutter: ^3.1.0
   flutter_dotenv: ^5.2.1
@@ -37,6 +38,7 @@ dependencies:
   sqlcipher_flutter_libs: ^0.6.8
   path_provider: ^2.1.5
   path: ^1.9.0
+  shared_preferences: ^2.5.3
   flutter_contacts: ^1.1.9
   flutter_map: ^7.0.0
   latlong2: ^0.9.1
@@ -57,6 +59,11 @@ dev_dependencies:
 
 # The following section is specific to Flutter packages.
 flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.cluborbit.matrix
+        pluginClass: CluborbitMatrixPlugin
   assets:
     - assets/images/
 

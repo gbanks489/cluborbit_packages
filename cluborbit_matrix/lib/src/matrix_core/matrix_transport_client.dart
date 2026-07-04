@@ -82,6 +82,7 @@ abstract class MatrixTransportClient {
   Future<Map<String, dynamic>> getPresenceStatus(String userId);
   Future<Map<String, dynamic>> getState(String roomId);
   Future<List<dynamic>> getStateEvents(String roomId);
+  Future<String> resolveRoomAlias(String roomAlias);
   Future<Map<String, dynamic>> getMembers(String roomId);
   Future<void> joinRoom(String roomId);
   Future<void> leaveRoom(String roomId);
@@ -95,7 +96,7 @@ abstract class MatrixTransportClient {
     required String url,
     String lang = 'en',
     String profileTag = 'mobile',
-    String format = 'event_id_only',
+    String? format,
   });
 
   Future<void> deletePusher({required String pushKey, required String appId});

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cluborbit_matrix/cluborbit_matrix.dart';
@@ -9,12 +10,15 @@ import 'package:cluborbit_models/cluborbit_models.dart';
 import 'package:provider/provider.dart';
 
 import '../app/playerchat_router.dart';
+import 'user_profile_view_screen.dart';
 import '../widgets/playerui_search_bar.dart';
 
 enum _ThreadAction { mute, unmute, pin, unpin, leave, markUnread }
 
 class ChatListScreen extends StatefulWidget {
-  const ChatListScreen({super.key});
+  const ChatListScreen({super.key, this.bottomNavigationBar});
+
+  final Widget? bottomNavigationBar;
 
   @override
   State<ChatListScreen> createState() => _ChatListScreenState();
@@ -48,6 +52,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
           // Error notifier already receives the exception. Keep chat list usable.
         }
       }
+      // Silently run an integrity check in the background every time the chat
+      // list opens so any rooms missed by the incremental sync are picked up
+      // automatically. Delayed by 5 s so the UI is fully settled before the
+      // full-state Matrix sync + FlutterSecureStorage writes fire.
+      Future.delayed(const Duration(seconds: 5), () {
+        if (!mounted) return;
+        unawaited(controller.runIntegrityCheck());
+      });
     });
   }
 
@@ -385,6 +397,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
           backgroundColor: PlayerUiSignalTheme.mobileBackgroundColor,
           appBar: AppBar(
             backgroundColor: PlayerUiSignalTheme.secondaryColor,
+            titleSpacing: 20,
             title: const Text(
               'Chats',
               style: TextStyle(color: PlayerUiSignalTheme.primaryDarkColor),
@@ -393,7 +406,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
               Builder(
                 builder: (context) {
                   final profile = controller.userProfile;
-                  final avatarUrl = profile?.profilePic?.thumbnailURL;
+                  final avatarUrl =
+                      profile?.profilePic?.thumbnailURL ??
+                      profile?.profilePic?.scrollSizeURL ??
+                      profile?.profilePic?.fullSizeURL;
                   final initialsSource =
                       profile?.displayName ?? profile?.firstName ?? 'U';
                   final initials = initialsSource.trim().isEmpty
@@ -411,7 +427,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       color: PlayerUiSignalTheme.secondaryColor,
                       onSelected: (value) async {
                         if (value == 'profile') {
-                          context.pushNamed(PlayerChatRoutes.profile);
+                          await Navigator.of(context).push<void>(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const UserProfileViewScreen(),
+                            ),
+                          );
                           return;
                         }
                         if (value == 'call_settings') {
@@ -424,8 +444,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                           context.goNamed(PlayerChatRoutes.login);
                         }
                       },
-                      itemBuilder: (_) => const [
-                        PopupMenuItem<String>(
+                      itemBuilder: (_) => [
+                        const PopupMenuItem<String>(
                           value: 'profile',
                           child: Row(
                             children: [
@@ -439,21 +459,22 @@ class _ChatListScreenState extends State<ChatListScreen> {
                             ],
                           ),
                         ),
-                        PopupMenuItem<String>(
-                          value: 'call_settings',
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.call,
-                                size: 18,
-                                color: PlayerUiSignalTheme.primaryDarkColor,
-                              ),
-                              SizedBox(width: 8),
-                              Text('Call settings'),
-                            ],
+                        if (kDebugMode)
+                          const PopupMenuItem<String>(
+                            value: 'call_settings',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.call,
+                                  size: 18,
+                                  color: PlayerUiSignalTheme.primaryDarkColor,
+                                ),
+                                SizedBox(width: 8),
+                                Text('Call settings'),
+                              ],
+                            ),
                           ),
-                        ),
-                        PopupMenuItem<String>(
+                        const PopupMenuItem<String>(
                           value: 'logout',
                           child: Row(
                             children: [
@@ -498,6 +519,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
             },
             child: const Icon(Icons.edit_square),
           ),
+          bottomNavigationBar: widget.bottomNavigationBar,
           body: Stack(
             children: [
               Padding(
@@ -794,23 +816,28 @@ class _ChatListScreenState extends State<ChatListScreen> {
             },
           );
           try {
-            final joined = await controller.joinRoomIfInvited(thread.id);
+            await controller.joinRoomIfInvited(thread.id);
             if (!context.mounted) return;
             Navigator.of(context, rootNavigator: true).pop();
-            if (!joined) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Could not join this invited room yet.'),
-                ),
-              );
-              return;
-            }
             await controller.loadThreads();
-          } catch (_) {
-            if (context.mounted) {
-              Navigator.of(context, rootNavigator: true).pop();
-            }
-            rethrow;
+          } catch (e) {
+            if (!context.mounted) return;
+            Navigator.of(context, rootNavigator: true).pop();
+            // Strip the Dart exception prefix and show the raw Matrix error.
+            final raw = e.toString();
+            final msg = raw
+                .replaceFirst(RegExp(r'^StateError:\s*'), '')
+                .replaceFirst(RegExp(r'^Exception:\s*'), '')
+                .trim();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  msg.isEmpty ? 'Could not join room.' : msg,
+                  style: const TextStyle(fontFamily: 'Poppins'),
+                ),
+                duration: const Duration(seconds: 6),
+              ),
+            );
           }
         }
 

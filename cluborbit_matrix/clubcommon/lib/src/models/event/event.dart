@@ -31,7 +31,7 @@ enum RecurringFrequency {
   months,
 }
 
-enum EventStatus { canceled, active, completed }
+enum EventStatus { cancelled, active, completed }
 
 @JsonSerializable()
 class EventDate {

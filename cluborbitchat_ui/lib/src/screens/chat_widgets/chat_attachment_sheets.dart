@@ -293,6 +293,73 @@ class _LocationAttachmentSheetState extends State<_LocationAttachmentSheet> {
   final TextEditingController _titleController = TextEditingController();
   final MapController _mapController = MapController();
   LatLng? _pickedLocation;
+  bool _loadingLocation = true;
+  String? _locationError;
+
+  static const LatLng _fallback = LatLng(51.5074, -0.1278);
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_fetchCurrentLocation());
+  }
+
+  Future<void> _fetchCurrentLocation() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted) {
+          setState(() {
+            _loadingLocation = false;
+            _locationError = 'Location services are disabled.';
+          });
+        }
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          setState(() {
+            _loadingLocation = false;
+            _locationError = 'Location permission denied.';
+          });
+        }
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
+        ),
+      );
+
+      if (!mounted) return;
+      final loc = LatLng(position.latitude, position.longitude);
+      setState(() {
+        _pickedLocation = loc;
+        _loadingLocation = false;
+      });
+      // Wait one frame so the map is laid out before moving the camera.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _mapController.move(loc, 15);
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loadingLocation = false;
+          _locationError = 'Could not get location: $e';
+        });
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -327,100 +394,137 @@ class _LocationAttachmentSheetState extends State<_LocationAttachmentSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final bottomPad = MediaQuery.of(context).viewInsets.bottom + 16;
+    final initialCenter = _pickedLocation ?? _fallback;
     return SafeArea(
       top: false,
-      child: Container(
-        decoration: const BoxDecoration(
-          color: PlayerUiSignalTheme.secondaryColor,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        padding: EdgeInsets.fromLTRB(
-          16,
-          12,
-          16,
-          16 + MediaQuery.of(context).viewInsets.bottom,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // drag handle
-            Container(
-              width: 44,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(999),
-              ),
-            ),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Pick a location',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  fontFamily: 'Poppins',
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            // Optional place name
-            _AttachmentInput(
-              controller: _titleController,
-              label: 'Place name (optional)',
-              hint: 'Coffee shop, venue, park...',
-            ),
-            // Map
-            ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: SizedBox(
-                height: 280,
-                child: FlutterMap(
-                  mapController: _mapController,
-                  options: MapOptions(
-                    initialCenter: const LatLng(51.5074, -0.1278),
-                    initialZoom: 12,
-                    onTap: (tapPosition, point) {
-                      setState(() => _pickedLocation = point);
-                    },
+      child: DraggableScrollableSheet(
+        initialChildSize: 0.80,
+        minChildSize: 0.50,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (_, scrollController) => Container(
+          decoration: const BoxDecoration(
+            color: PlayerUiSignalTheme.secondaryColor,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: EdgeInsets.fromLTRB(16, 12, 16, bottomPad),
+          child: SingleChildScrollView(
+            controller: scrollController,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // drag handle
+                Container(
+                  width: 44,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(999),
                   ),
-                  children: [
-                    TileLayer(
-                      urlTemplate:
-                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      userAgentPackageName: 'com.example.playerchat',
+                ),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Send location',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      fontFamily: 'Poppins',
                     ),
-                    if (_pickedLocation != null)
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: _pickedLocation!,
-                            child: const Icon(
-                              Icons.location_pin,
-                              color: Colors.red,
-                              size: 40,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // Optional place name
+                _AttachmentInput(
+                  controller: _titleController,
+                  label: 'Place name (optional)',
+                  hint: 'Coffee shop, venue, park...',
+                ),
+                const SizedBox(height: 10),
+                if (_locationError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      _locationError!,
+                      style: const TextStyle(
+                        color: Colors.redAccent,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                // Map
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: SizedBox(
+                    height: 280,
+                    child: Stack(
+                      children: [
+                        FlutterMap(
+                          mapController: _mapController,
+                          options: MapOptions(
+                            initialCenter: initialCenter,
+                            initialZoom: _pickedLocation != null ? 15 : 12,
+                            onTap: (tapPosition, point) {
+                              setState(() => _pickedLocation = point);
+                              _mapController.move(
+                                point,
+                                _mapController.camera.zoom,
+                              );
+                            },
+                          ),
+                          children: [
+                            TileLayer(
+                              urlTemplate:
+                                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              userAgentPackageName: 'com.example.playerchat',
+                            ),
+                            if (_pickedLocation != null)
+                              MarkerLayer(
+                                markers: [
+                                  Marker(
+                                    point: _pickedLocation!,
+                                    width: 40,
+                                    height: 40,
+                                    child: const Icon(
+                                      Icons.location_pin,
+                                      color: Colors.red,
+                                      size: 40,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                          ],
+                        ),
+                        if (_loadingLocation)
+                          const Center(
+                            child: CircularProgressIndicator(
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.white,
+                              ),
                             ),
                           ),
-                        ],
-                      ),
-                  ],
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    _pickedLocation != null
+                        ? '${_pickedLocation!.latitude.toStringAsFixed(5)}, '
+                              '${_pickedLocation!.longitude.toStringAsFixed(5)}  •  Tap map to move pin'
+                        : 'Tap the map to place a pin',
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _AttachmentFormActionRow(onSend: _submit),
+              ],
             ),
-            if (_pickedLocation != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  'Selected: ${_pickedLocation!.latitude.toStringAsFixed(5)}, '
-                  '${_pickedLocation!.longitude.toStringAsFixed(5)}',
-                  style: const TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-              ),
-            const SizedBox(height: 12),
-            _AttachmentFormActionRow(onSend: _submit),
-          ],
+          ),
         ),
       ),
     );

@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:clubcommon/clubcommon.dart';
 import 'package:flutter/foundation.dart';
@@ -125,12 +124,22 @@ class UserProfileService {
     }
 
     final uri = _buildUri('/user');
-    final response = await _http.postMultipart(
+    final fields = _multipartFields(profile);
+    var response = await _http.postMultipart(
       uri,
       headers: await _headers(),
-      fields: _multipartFields(profile),
+      fields: fields,
       files: files.isEmpty ? null : files,
     );
+
+    if (_isExpiredAuthResponse(response)) {
+      response = await _http.postMultipart(
+        uri,
+        headers: await _headers(forceRefresh: true),
+        fields: fields,
+        files: files.isEmpty ? null : files,
+      );
+    }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception(
@@ -151,25 +160,34 @@ class UserProfileService {
   }
 
   User _normalizedProfile(User profile) {
-    final photoUrl = _normalizedPhotoUrl(profile.profilePic?.thumbnailURL);
+    final normalizedThumbnailUrl = _normalizedPhotoUrl(
+      profile.profilePic?.thumbnailURL,
+    );
+    final normalizedScrollSizeUrl = _normalizedPhotoUrl(
+      profile.profilePic?.scrollSizeURL,
+    );
+    final normalizedFullSizeUrl = _normalizedPhotoUrl(
+      profile.profilePic?.fullSizeURL,
+    );
     final coverUrl = _normalizedPhotoUrl(profile.coverPicUrl);
-    if (photoUrl == profile.profilePic?.thumbnailURL &&
+    if (normalizedThumbnailUrl == profile.profilePic?.thumbnailURL &&
+        normalizedScrollSizeUrl == profile.profilePic?.scrollSizeURL &&
+        normalizedFullSizeUrl == profile.profilePic?.fullSizeURL &&
         coverUrl == profile.coverPicUrl) {
       return profile;
     }
 
-    return User(
-      uid: profile.uid,
-      email: profile.email,
-      firstName: profile.firstName,
-      lastName: profile.lastName,
-      displayName: profile.displayName,
-      dateOfBirth: profile.dateOfBirth,
-      gender: profile.gender,
-      bio: profile.bio,
-      coverPicUrl: profile.coverPicUrl,
-      profilePic: profile.profilePic,
-    );
+    final payload = profile.toJson();
+    payload['coverPicUrl'] = coverUrl;
+
+    final profilePic = payload['profilePic'];
+    if (profilePic is Map<String, dynamic>) {
+      profilePic['thumbnailURL'] = normalizedThumbnailUrl;
+      profilePic['scrollSizeURL'] = normalizedScrollSizeUrl;
+      profilePic['fullSizeURL'] = normalizedFullSizeUrl;
+    }
+
+    return User.fromJson(payload);
   }
 
   String? _normalizedPhotoUrl(String? raw) {
@@ -269,10 +287,10 @@ class UserProfileService {
     );
   }
 
-  Future<Map<String, String>> _headers() async {
+  Future<Map<String, String>> _headers({bool forceRefresh = false}) async {
     final headers = <String, String>{'Accept': 'application/json'};
 
-    final token = await _authService.getToken();
+    final token = await _authService.getToken(forceRefresh: forceRefresh);
     if (token != null && token.isNotEmpty) {
       headers['Authorization'] = 'Bearer $token';
     }
@@ -328,24 +346,17 @@ class UserProfileService {
 
   Future<dynamic> _fetchProfileResponseBody({required String uid}) async {
     final uri = _buildUri('/user', query: <String, String>{'uid': uid});
-    final headers = await _headers();
-    await _appendAppLog(
-      'REQUEST ${uri.toString()}\nheaders: ${jsonEncode(headers)}',
-    );
+    var headers = await _headers();
+    var response = await _getWithLogging(uri, headers: headers);
 
-    http.Response response;
-    try {
-      response = await _http.get(uri, headers: headers);
-    } catch (error, stackTrace) {
-      await _appendAppLog(
-        'REQUEST ERROR ${uri.toString()}\nerror: $error\nstackTrace: $stackTrace',
+    if (_isExpiredAuthResponse(response)) {
+      headers = await _headers(forceRefresh: true);
+      response = await _getWithLogging(
+        uri,
+        headers: headers,
+        note: 'retry-force-refresh',
       );
-      rethrow;
     }
-
-    await _appendAppLog(
-      'RESPONSE ${uri.toString()}\nstatus: ${response.statusCode}\nheaders: ${jsonEncode(response.headers)}\nbody: ${response.body}',
-    );
 
     if (response.statusCode == 404 || response.body.trim().isEmpty) {
       return null;
@@ -357,6 +368,41 @@ class UserProfileService {
     }
 
     return ClubHttpUtils.decodeBody(response);
+  }
+
+  Future<http.Response> _getWithLogging(
+    Uri uri, {
+    required Map<String, String> headers,
+    String? note,
+  }) async {
+    final suffix = note == null ? '' : ' [$note]';
+    await _appendAppLog(
+      'REQUEST$suffix ${uri.toString()}\nheaders: ${jsonEncode(headers)}',
+    );
+
+    try {
+      final response = await _http.get(uri, headers: headers);
+      await _appendAppLog(
+        'RESPONSE$suffix ${uri.toString()}\nstatus: ${response.statusCode}\nheaders: ${jsonEncode(response.headers)}\nbody: ${response.body}',
+      );
+      return response;
+    } catch (error, stackTrace) {
+      await _appendAppLog(
+        'REQUEST ERROR$suffix ${uri.toString()}\nerror: $error\nstackTrace: $stackTrace',
+      );
+      rethrow;
+    }
+  }
+
+  bool _isExpiredAuthResponse(http.Response response) {
+    if (response.statusCode != 401) {
+      return false;
+    }
+
+    final body = response.body.toLowerCase();
+    return body.contains('id token has expired') ||
+        body.contains('verify-id-tokens') ||
+        body.contains('firebase');
   }
 
   Future<void> _appendAppLog(String message) async {

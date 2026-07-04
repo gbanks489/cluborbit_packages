@@ -5,9 +5,11 @@ import 'dart:math';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:just_audio/just_audio.dart';
@@ -219,6 +221,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   Timer? _typingStopTimer;
+  Timer? _presenceRefreshTimer;
   StreamSubscription<PlayerState>? _audioPlayerStateSub;
   StreamSubscription<Duration>? _audioPositionSub;
   StreamSubscription<Duration?>? _audioDurationSub;
@@ -230,6 +233,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Duration _audioPosition = Duration.zero;
   Duration _audioDuration = Duration.zero;
   final Set<String> _selectedMessageIds = <String>{};
+  ChatMessage? _editTargetMessage;
   final Map<String, String> _localMessageReactions = <String, String>{};
   final Set<String> _expandedEventClusterKeys = <String>{};
   final Map<String, _LinkPreviewData> _linkPreviewByUrl =
@@ -238,6 +242,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final Set<String> _linkPreviewUnavailableUrls = <String>{};
   final Set<String> _presenceRequestsInFlight = <String>{};
   ChatController? _controllerRef;
+  ErrorNotifier? _errorNotifierRef;
   late _ChatAppearance _appearance;
   String? _appearancePreferenceKey;
 
@@ -246,6 +251,10 @@ class _ChatScreenState extends State<ChatScreen> {
     super.didChangeDependencies();
     final controller = context.read<ChatController>();
     _controllerRef ??= controller;
+    if (_errorNotifierRef == null) {
+      _errorNotifierRef = context.read<ErrorNotifier>();
+      _errorNotifierRef!.addListener(_onErrorNotifierChanged);
+    }
     final preferenceKey = _chatPreferenceKey(controller);
     if (_appearancePreferenceKey == preferenceKey) {
       return;
@@ -278,6 +287,10 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _appearance = _ChatAppearance.defaults;
     unawaited(_warmChatAppearanceCache());
+    _presenceRefreshTimer = Timer.periodic(
+      const Duration(seconds: 8),
+      (_) => _refreshParticipantPresence(),
+    );
     _messagesScrollController.addListener(_handleMessageListScroll);
     _composerFocusNode.addListener(_handleComposerFocusChange);
     _audioPlayerStateSub = _audioPlayer.playerStateStream.listen((state) {
@@ -313,6 +326,7 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       final controller = _controllerRef ?? context.read<ChatController>();
+      unawaited(_refreshParticipantPresence());
       if (controller.userProfile == null) {
         try {
           await controller.refreshCurrentUserProfile();
@@ -645,6 +659,7 @@ class _ChatScreenState extends State<ChatScreen> {
             message.body,
             style: TextStyle(
               fontSize: message.kind == MessageKind.emoji ? 28 : 16,
+              fontWeight: FontWeight.w400,
               color: _appearance.messageTextColor,
               fontFamily: _appearance.messageFontFamily,
             ),
@@ -710,6 +725,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           message,
                         ),
                         isRead: effectiveReadCount > 0,
+                        isFailed: _messageIsFailed(message),
                       ),
                     ),
                 ],
@@ -749,9 +765,36 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _loadPresence(ChatController controller, String userId) async {
+  Future<void> _refreshParticipantPresence() async {
+    final controller = _controllerRef;
+    if (!mounted || controller == null) {
+      return;
+    }
+    final userIds = controller.participants
+        .map((participant) => participant.userId)
+        .where(
+          (userId) => userId.isNotEmpty && userId != controller.matrixUserId,
+        )
+        .toSet();
+    for (final userId in userIds) {
+      if (_presenceRequestsInFlight.contains(userId)) {
+        continue;
+      }
+      _presenceRequestsInFlight.add(userId);
+      unawaited(_loadPresence(controller, userId, forceRefresh: true));
+    }
+  }
+
+  Future<void> _loadPresence(
+    ChatController controller,
+    String userId, {
+    bool forceRefresh = false,
+  }) async {
     try {
-      await controller.getUserPresence(userId);
+      await controller.getUserPresence(userId, forceRefresh: forceRefresh);
+      if (mounted) {
+        setState(() {});
+      }
     } catch (_) {
       // Default-offline UI is sufficient if presence lookup fails.
     } finally {
@@ -761,6 +804,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _errorNotifierRef?.removeListener(_onErrorNotifierChanged);
+    _presenceRefreshTimer?.cancel();
     _typingStopTimer?.cancel();
     _controllerRef?.setTyping(false);
     _audioPlayerStateSub?.cancel();
@@ -915,9 +960,30 @@ class _ChatScreenState extends State<ChatScreen> {
     return message.metadata['timelineOnly'] == true;
   }
 
+  void _onErrorNotifierChanged() {
+    final error = _errorNotifierRef?.errorMessage?.trim();
+    if (error != null && error.isNotEmpty) {
+      debugPrint('[ChatScreen] Send error: $error');
+    }
+    if (error != null && error.isNotEmpty && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error),
+          backgroundColor: const Color(0xFF4A1616),
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    }
+  }
+
   bool _messageHasServerAck(ChatMessage message) {
     final stage = (message.metadata['sendStage'] ?? 'sent').toString();
     return stage != 'local' && stage != 'failed';
+  }
+
+  bool _messageIsFailed(ChatMessage message) {
+    final stage = (message.metadata['sendStage'] ?? 'sent').toString();
+    return stage == 'failed';
   }
 
   bool _messageShowsReceivedCircle(ChatMessage message) {
@@ -1020,13 +1086,8 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
       if (message.kind == MessageKind.emoji) {
-        events.add(
-          _TimelineEventItem(
-            icon: Icons.tag_faces_outlined,
-            label: 'Reaction sent',
-            time: message.createdAt,
-          ),
-        );
+        // Reaction events are shown as bubble overlays — skip in timeline.
+        continue;
       }
     }
     events.sort((a, b) => a.time.compareTo(b.time));
@@ -1431,6 +1492,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           message,
                         ),
                         isRead: effectiveReadCount > 0,
+                        isFailed: _messageIsFailed(message),
                       ),
                     ),
                 ],
@@ -1601,6 +1663,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           message,
                         ),
                         isRead: effectiveReadCount > 0,
+                        isFailed: _messageIsFailed(message),
                       ),
                     ),
                 ],
@@ -1886,6 +1949,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           message,
                         ),
                         isRead: effectiveReadCount > 0,
+                        isFailed: _messageIsFailed(message),
                       ),
                     ),
                 ],
@@ -1952,6 +2016,26 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     setState(() => _selectedMessageIds.clear());
+  }
+
+  void _startEditingMessage(ChatMessage message) {
+    setState(() {
+      _editTargetMessage = message;
+      _selectedMessageIds.clear();
+    });
+    _composerController.text = message.body;
+    _composerController.selection = TextSelection.collapsed(
+      offset: message.body.length,
+    );
+    _composerFocusNode.requestFocus();
+  }
+
+  void _cancelEditing() {
+    setState(() {
+      _editTargetMessage = null;
+    });
+    _composerController.clear();
+    _composerFocusNode.unfocus();
   }
 
   void _toggleMessageSelection(
@@ -2239,6 +2323,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           message,
                         ),
                         isRead: effectiveReadCount > 0,
+                        isFailed: _messageIsFailed(message),
                       ),
                     ),
                 ],
@@ -2584,6 +2669,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               message,
                             ),
                             isRead: effectiveReadCount > 0,
+                            isFailed: _messageIsFailed(message),
                           ),
                         ),
                     ],
@@ -2644,13 +2730,18 @@ class _ChatScreenState extends State<ChatScreen> {
         final composerFocused = _composerFocusNode.hasFocus;
         final scrollFabBottom =
             (_showEmojiPickerPanel ? 386.0 : 66.0) +
-            (replyTo != null ? 72.0 : 0.0);
+            (_editTargetMessage != null || replyTo != null ? 72.0 : 0.0);
 
         return PopScope<void>(
-          canPop: !_showEmojiPickerPanel && !_isSelectionMode,
+          canPop:
+              !_showEmojiPickerPanel &&
+              !_isSelectionMode &&
+              _editTargetMessage == null,
           onPopInvokedWithResult: (didPop, _) {
             if (!didPop) {
-              if (_isSelectionMode) {
+              if (_editTargetMessage != null) {
+                _cancelEditing();
+              } else if (_isSelectionMode) {
                 _clearSelectedMessages();
               } else if (_showEmojiPickerPanel) {
                 setState(() {
@@ -2702,6 +2793,34 @@ class _ChatScreenState extends State<ChatScreen> {
                             _composerFocusNode.requestFocus();
                           },
                         ),
+                      Builder(
+                        builder: (context) {
+                          if (_selectedMessageIds.length != 1) {
+                            return const SizedBox.shrink();
+                          }
+                          final selectedMessages = _selectedMessagesFrom(
+                            controller.messages,
+                          );
+                          if (selectedMessages.length != 1) {
+                            return const SizedBox.shrink();
+                          }
+                          final msg = selectedMessages.first;
+                          final canEdit =
+                              msg.senderId == controller.matrixUserId &&
+                              msg.kind == MessageKind.text &&
+                              msg.metadata['isDeleted'] != true &&
+                              msg.metadata['timelineOnly'] != true;
+                          if (!canEdit) return const SizedBox.shrink();
+                          return IconButton(
+                            icon: const Icon(
+                              Icons.edit_outlined,
+                              color: PlayerUiSignalTheme.primaryDarkColor,
+                            ),
+                            tooltip: 'Edit',
+                            onPressed: () => _startEditingMessage(msg),
+                          );
+                        },
+                      ),
                       IconButton(
                         icon: const Icon(
                           Icons.delete_outline,
@@ -2763,7 +2882,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         height: 22,
                       ),
                     ),
-                    titleSpacing: 8,
+                    titleSpacing: 16,
                     title: Row(
                       children: [
                         if ((controller.activeRoomAvatarUrl ??
@@ -2800,24 +2919,26 @@ class _ChatScreenState extends State<ChatScreen> {
                       ],
                     ),
                     actions: [
-                      IconButton(
-                        icon: const Icon(
-                          Icons.call_outlined,
-                          color: PlayerUiSignalTheme.primaryDarkColor,
+                      if (!kReleaseMode) ...[
+                        IconButton(
+                          icon: const Icon(
+                            Icons.call_outlined,
+                            color: PlayerUiSignalTheme.primaryDarkColor,
+                          ),
+                          tooltip: 'Voice call',
+                          onPressed: () =>
+                              unawaited(_openCallSession(isVideo: false)),
                         ),
-                        tooltip: 'Voice call',
-                        onPressed: () =>
-                            unawaited(_openCallSession(isVideo: false)),
-                      ),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.videocam_outlined,
-                          color: PlayerUiSignalTheme.primaryDarkColor,
+                        IconButton(
+                          icon: const Icon(
+                            Icons.videocam_outlined,
+                            color: PlayerUiSignalTheme.primaryDarkColor,
+                          ),
+                          tooltip: 'Video call',
+                          onPressed: () =>
+                              unawaited(_openCallSession(isVideo: true)),
                         ),
-                        tooltip: 'Video call',
-                        onPressed: () =>
-                            unawaited(_openCallSession(isVideo: true)),
-                      ),
+                      ],
                       PopupMenuButton<_ChatMenuAction>(
                         tooltip: 'Chat options',
                         position: PopupMenuPosition.under,
@@ -3059,6 +3180,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                   _buildBubbleWithReactionOverlay(
                                     message: message,
                                     bubble: bubble,
+                                    controller: controller,
                                   );
 
                               final row = mine
@@ -3230,6 +3352,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                   _buildBubbleWithReactionOverlay(
                                     message: message,
                                     bubble: pollContent,
+                                    controller: controller,
                                   );
 
                               return Dismissible(
@@ -3390,6 +3513,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                                     MessageKind.emoji
                                                 ? 28
                                                 : 16,
+                                            fontWeight: FontWeight.w400,
                                             color: _appearance.messageTextColor,
                                             fontFamily:
                                                 _appearance.messageFontFamily,
@@ -3436,6 +3560,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                                         ),
                                                     isRead:
                                                         effectiveReadCount > 0,
+                                                    isFailed: _messageIsFailed(
+                                                      message,
+                                                    ),
                                                   ),
                                                 ),
                                               ),
@@ -3451,6 +3578,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 _buildBubbleWithReactionOverlay(
                                   message: message,
                                   bubble: bubble,
+                                  controller: controller,
                                 );
 
                             final row = mine
@@ -3606,7 +3734,65 @@ class _ChatScreenState extends State<ChatScreen> {
                               )
                             : const SizedBox.shrink(),
                       ),
-                      if (replyTo != null)
+                      if (_editTargetMessage != null)
+                        Container(
+                          margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _appearance.otherBubbleColor,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: PlayerUiSignalTheme.primaryDarkColor
+                                  .withAlpha(120),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.edit_outlined,
+                                size: 16,
+                                color: PlayerUiSignalTheme.primaryDarkColor,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Edit message',
+                                      style: TextStyle(
+                                        color: PlayerUiSignalTheme
+                                            .primaryDarkColor,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    Text(
+                                      _editTargetMessage!.body,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: _cancelEditing,
+                                icon: const Icon(
+                                  Icons.close,
+                                  color: Colors.white70,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      else if (replyTo != null)
                         Container(
                           margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
                           padding: const EdgeInsets.symmetric(
@@ -3756,6 +3942,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                     maxLines: null,
                                     textAlignVertical: TextAlignVertical.center,
                                     keyboardType: TextInputType.multiline,
+                                    cursorColor: Colors.white,
                                     style: TextStyle(
                                       fontFamily: _appearance.messageFontFamily,
                                       fontSize: 14,
@@ -3816,9 +4003,20 @@ class _ChatScreenState extends State<ChatScreen> {
                                     visualDensity: VisualDensity.compact,
                                     onPressed: () async {
                                       final text = _composerController.text;
+                                      final editTarget = _editTargetMessage;
                                       _composerController.clear();
                                       _stopTyping(controller);
-                                      await controller.sendText(text);
+                                      if (editTarget != null) {
+                                        setState(() {
+                                          _editTargetMessage = null;
+                                        });
+                                        await controller.editMessage(
+                                          eventId: editTarget.id,
+                                          updatedText: text,
+                                        );
+                                      } else {
+                                        await controller.sendText(text);
+                                      }
                                     },
                                     icon: const Icon(
                                       Icons.send,
@@ -3983,40 +4181,156 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildBubbleWithReactionOverlay({
     required ChatMessage message,
     required Widget bubble,
+    required ChatController controller,
   }) {
-    final reaction = _localMessageReactions[message.id];
-    if (reaction == null || reaction.isEmpty) {
+    // Merge server-side reactions with any local optimistic reaction.
+    final reactionEventsRaw = message.metadata['reactionEvents'];
+    final serverEvents = reactionEventsRaw is List
+        ? reactionEventsRaw
+              .whereType<Map<String, dynamic>>()
+              .where(
+                (e) =>
+                    !(e['key'] ?? '').toString().startsWith('poll:') &&
+                    (e['key'] ?? '').toString().isNotEmpty,
+              )
+              .toList()
+        : <Map<String, dynamic>>[];
+
+    final localReaction = _localMessageReactions[message.id];
+    final localUserId = controller.matrixUserId;
+    final hasLocalInServer =
+        localUserId.isNotEmpty &&
+        serverEvents.any((e) => e['senderId'] == localUserId);
+    final allEvents = [
+      ...serverEvents,
+      if (localReaction != null &&
+          localReaction.isNotEmpty &&
+          !hasLocalInServer)
+        <String, dynamic>{'senderId': localUserId, 'key': localReaction},
+    ];
+
+    if (allEvents.isEmpty) {
       return bubble;
     }
 
+    // Build emoji summary: distinct emojis with counts.
+    final emojiCounts = <String, int>{};
+    for (final e in allEvents) {
+      final key = (e['key'] ?? '').toString();
+      if (key.isNotEmpty) emojiCounts[key] = (emojiCounts[key] ?? 0) + 1;
+    }
+    final totalCount = allEvents.length;
+
+    // Find the current user's own reaction event (if any) so it can be removed.
+    final myReactionEvent = localUserId.isNotEmpty
+        ? allEvents.firstWhere(
+            (e) => e['senderId'] == localUserId,
+            orElse: () => <String, dynamic>{},
+          )
+        : <String, dynamic>{};
+    final myReactionEventId = (myReactionEvent['eventId'] ?? '').toString();
+    final iHaveReacted = myReactionEvent.isNotEmpty;
+
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.only(bottom: 6),
       child: Stack(
         clipBehavior: Clip.none,
         children: [
           bubble,
           Positioned(
             left: 10,
-            bottom: -8,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: PlayerUiSignalTheme.secondaryColor,
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(
-                  color: PlayerUiSignalTheme.primaryDarkColor.withAlpha(130),
+            bottom: -6,
+            child: GestureDetector(
+              onTap: () => _showReactionDetailSheet(
+                context,
+                message,
+                controller,
+                allEvents,
+              ),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: PlayerUiSignalTheme.secondaryColor,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: PlayerUiSignalTheme.primaryDarkColor.withAlpha(130),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ...emojiCounts.entries.take(3).map((entry) {
+                      final emoji = entry.key;
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 1),
+                        child: _isHeartReaction(emoji)
+                            ? const Icon(
+                                Icons.favorite,
+                                color: Colors.redAccent,
+                                size: 11,
+                              )
+                            : Text(emoji, style: const TextStyle(fontSize: 11)),
+                      );
+                    }),
+                    if (totalCount > 1)
+                      Text(
+                        ' $totalCount',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              child: _isHeartReaction(reaction)
-                  ? const Icon(
-                      Icons.favorite,
-                      color: Colors.redAccent,
-                      size: 16,
-                    )
-                  : Text(reaction, style: const TextStyle(fontSize: 16)),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _showReactionDetailSheet(
+    BuildContext context,
+    ChatMessage message,
+    ChatController controller,
+    List<Map<String, dynamic>> allEvents,
+  ) async {
+    final participantsById = <String, ChatParticipant>{
+      for (final p in controller.participants) p.userId: p,
+    };
+    // Group by emoji.
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    for (final e in allEvents) {
+      final key = (e['key'] ?? '').toString();
+      if (key.isEmpty) continue;
+      grouped.putIfAbsent(key, () => []).add(e);
+    }
+    if (grouped.isEmpty) return;
+    FocusScope.of(context).unfocus();
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) => DraggableScrollableSheet(
+        initialChildSize: 0.30,
+        minChildSize: 0.20,
+        maxChildSize: 0.75,
+        expand: false,
+        snap: true,
+        snapSizes: const [0.30, 0.75],
+        builder: (sheetContext, scrollController) => _ReactionDetailSheet(
+          grouped: grouped,
+          participantsById: participantsById,
+          myUserId: controller.matrixUserId,
+          isHeartReaction: _isHeartReaction,
+          scrollController: scrollController,
+          onRemoveReaction: (reactionEventId) {
+            setState(() => _localMessageReactions.remove(message.id));
+            controller.removeReaction(reactionEventId);
+          },
+        ),
       ),
     );
   }
@@ -4149,10 +4463,18 @@ class _ChatScreenState extends State<ChatScreen> {
       images: selected,
       caption: caption,
     );
-    if (sent && mounted) {
-      _composerController.clear();
-      _stopTyping(controller);
+    if (!mounted) return;
+    if (!sent) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not send images. Please try again.'),
+          duration: Duration(seconds: 4),
+        ),
+      );
+      return;
     }
+    _composerController.clear();
+    _stopTyping(controller);
   }
 
   Future<void> _handleDocumentAttachment(ChatController controller) async {
@@ -4213,7 +4535,18 @@ class _ChatScreenState extends State<ChatScreen> {
 
     _composerController.clear();
     _stopTyping(controller);
-    await controller.sendText(message);
+    try {
+      await controller.sendText(message);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not send: ${e.toString()}'),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    }
   }
 
   Future<String?> _showLocationComposerSheet(BuildContext context) async {
@@ -4558,6 +4891,7 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
       backgroundColor: PlayerUiSignalTheme.mobileBackgroundColor,
       appBar: AppBar(
         backgroundColor: PlayerUiSignalTheme.secondaryColor,
+        titleSpacing: 20,
         title: const Text(
           'Forward message',
           style: TextStyle(color: PlayerUiSignalTheme.primaryDarkColor),
@@ -4577,6 +4911,7 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
                   _query = value;
                 });
               },
+              cursorColor: Colors.white,
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
                 hintText: 'Search chats',
@@ -5329,6 +5664,233 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
               ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reaction detail bottom sheet
+// ---------------------------------------------------------------------------
+
+class _ReactionDetailSheet extends StatefulWidget {
+  const _ReactionDetailSheet({
+    required this.grouped,
+    required this.participantsById,
+    required this.myUserId,
+    required this.isHeartReaction,
+    required this.scrollController,
+    required this.onRemoveReaction,
+  });
+
+  /// emoji → list of reaction event maps (each has 'senderId', 'key', 'eventId').
+  final Map<String, List<Map<String, dynamic>>> grouped;
+  final Map<String, ChatParticipant> participantsById;
+  final String myUserId;
+  final bool Function(String emoji) isHeartReaction;
+  final ScrollController scrollController;
+
+  /// Called with the reaction's eventId when the user removes their own reaction.
+  final void Function(String reactionEventId) onRemoveReaction;
+
+  @override
+  State<_ReactionDetailSheet> createState() => _ReactionDetailSheetState();
+}
+
+class _ReactionDetailSheetState extends State<_ReactionDetailSheet>
+    with TickerProviderStateMixin {
+  late TabController _tabController;
+  late List<String> _tabs; // 'All' + each distinct emoji
+  // Mutable local copy so reactions can be removed in-place.
+  late Map<String, List<Map<String, dynamic>>> _grouped;
+
+  @override
+  void initState() {
+    super.initState();
+    _grouped = {
+      for (final e in widget.grouped.entries)
+        e.key: List<Map<String, dynamic>>.from(e.value),
+    };
+    _tabs = ['All', ..._grouped.keys];
+    _tabController = TabController(length: _tabs.length, vsync: this);
+  }
+
+  void _rebuildTabs() {
+    final prevIndex = _tabController.index;
+    final newTabs = ['All', ..._grouped.keys];
+    final newIndex = prevIndex.clamp(0, (newTabs.length - 1).clamp(0, 999));
+    final old = _tabController;
+    _tabs = newTabs;
+    _tabController = TabController(
+      length: _tabs.length,
+      vsync: this,
+      initialIndex: newIndex,
+    );
+    // Dispose old controller after creating the new one so vsync remains valid.
+    old.dispose();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  List<Map<String, dynamic>> _eventsForTab(String tab) {
+    if (tab == 'All') {
+      return _grouped.values.expand((list) => list).toList();
+    }
+    return _grouped[tab] ?? [];
+  }
+
+  Widget _buildTabLabel(String tab) {
+    if (tab == 'All') {
+      final total = _grouped.values.fold<int>(
+        0,
+        (sum, list) => sum + list.length,
+      );
+      return Text('All  $total', style: const TextStyle(fontSize: 13));
+    }
+    final count = _grouped[tab]?.length ?? 0;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        widget.isHeartReaction(tab)
+            ? const Icon(Icons.favorite, color: Colors.redAccent, size: 18)
+            : Text(tab, style: const TextStyle(fontSize: 18)),
+        const SizedBox(width: 4),
+        Text('$count', style: const TextStyle(fontSize: 13)),
+      ],
+    );
+  }
+
+  Widget _buildRow(Map<String, dynamic> event) {
+    final senderId = (event['senderId'] ?? '').toString();
+    final participant = widget.participantsById[senderId];
+    final displayName =
+        participant?.displayName ??
+        (senderId.isNotEmpty
+            ? senderId.split(':').first.replaceFirst('@', '')
+            : 'Unknown');
+    final avatarUrl = participant?.avatarUrl;
+    final emoji = (event['key'] ?? '').toString();
+    final isMe = senderId == widget.myUserId;
+    final reactionEventId = (event['eventId'] ?? '').toString();
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      onTap: isMe && reactionEventId.isNotEmpty
+          ? () {
+              // Remove in-place from the sheet's local state.
+              setState(() {
+                for (final list in _grouped.values) {
+                  list.removeWhere(
+                    (e) => (e['eventId'] ?? '') == reactionEventId,
+                  );
+                }
+                _grouped.removeWhere((_, list) => list.isEmpty);
+                _rebuildTabs();
+              });
+              widget.onRemoveReaction(reactionEventId);
+            }
+          : null,
+      trailing: isMe && reactionEventId.isNotEmpty
+          ? const Icon(Icons.close, size: 16, color: Colors.white38)
+          : null,
+      leading: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          _AvatarThumb(
+            imageUrl: avatarUrl,
+            initials: displayName.isNotEmpty
+                ? displayName[0].toUpperCase()
+                : '?',
+            size: 40,
+            backgroundColor: PlayerUiSignalTheme.mobileSearchColor,
+          ),
+          Positioned(
+            right: -4,
+            bottom: -4,
+            child: Container(
+              padding: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                color: PlayerUiSignalTheme.secondaryColor,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: PlayerUiSignalTheme.mobileBackgroundColor,
+                  width: 1,
+                ),
+              ),
+              child: widget.isHeartReaction(emoji)
+                  ? const Icon(
+                      Icons.favorite,
+                      color: Colors.redAccent,
+                      size: 13,
+                    )
+                  : Text(emoji, style: const TextStyle(fontSize: 13)),
+            ),
+          ),
+        ],
+      ),
+      title: Text(
+        isMe ? '$displayName (You)' : displayName,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: PlayerUiSignalTheme.secondaryColor,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        children: [
+          // Drag handle
+          Container(
+            width: 36,
+            height: 4,
+            margin: const EdgeInsets.only(top: 10, bottom: 4),
+            decoration: BoxDecoration(
+              color: Colors.white.withAlpha(60),
+              borderRadius: BorderRadius.circular(99),
+            ),
+          ),
+          // Tab bar
+          TabBar(
+            controller: _tabController,
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
+            indicatorColor: PlayerUiSignalTheme.primaryDarkColor,
+            indicatorSize: TabBarIndicatorSize.tab,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white54,
+            dividerColor: Colors.white.withAlpha(20),
+            tabs: _tabs.map((tab) => Tab(child: _buildTabLabel(tab))).toList(),
+          ),
+          // Tab content — fills remaining height and scrolls
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: _tabs.map((tab) {
+                final events = _eventsForTab(tab);
+                return ListView.builder(
+                  controller: widget.scrollController,
+                  padding: const EdgeInsets.only(top: 6, bottom: 12),
+                  itemCount: events.length,
+                  itemBuilder: (context, index) => _buildRow(events[index]),
+                );
+              }).toList(),
+            ),
+          ),
+          SizedBox(height: MediaQuery.of(context).padding.bottom),
         ],
       ),
     );

@@ -10,13 +10,36 @@ class ConnectivityService {
   final ClubHttpUtils _http;
 
   Future<bool> isMatrixReachable() async {
-    final uri = Uri.parse('$_matrixHomeserver/_matrix/client/versions');
+    final uri = _buildVersionsUri();
+    if (uri == null) {
+      return false;
+    }
     try {
       final response = await _http.get(uri);
       return response.statusCode == 200;
     } catch (_) {
       return false;
     }
+  }
+
+  Uri? _buildVersionsUri() {
+    final raw = _matrixHomeserver.trim();
+    if (raw.isEmpty) {
+      return null;
+    }
+
+    final baseValue = (raw.startsWith('http://') || raw.startsWith('https://'))
+        ? raw
+        : 'https://$raw';
+
+    final base = Uri.tryParse(baseValue);
+    if (base == null || base.host.isEmpty) {
+      return null;
+    }
+
+    final normalizedBasePath = base.path.replaceAll(RegExp(r'/+$'), '');
+    final versionsPath = '$normalizedBasePath/_matrix/client/versions';
+    return base.replace(path: versionsPath);
   }
 
   Future<String?> detectCountryCode() async {

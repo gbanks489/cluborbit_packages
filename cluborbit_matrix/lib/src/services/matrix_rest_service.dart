@@ -141,6 +141,9 @@ class MatrixRestService {
   final String _homeserver;
   final String clientName;
   final String databaseName;
+
+  /// The Matrix homeserver this service is connected to.
+  String get homeserver => _homeserver;
   final MatrixDatabaseBuilder? databaseBuilder;
   final MatrixTransportFactory? transportFactory;
 
@@ -170,6 +173,7 @@ class MatrixRestService {
   final Map<String, DateTime> _presenceCacheAt = <String, DateTime>{};
   final Map<String, String> _lastMessagePreviewByRoom = <String, String>{};
   final Map<String, String> _lastMessageSenderByRoom = <String, String>{};
+  final Map<String, String> _lastMessageSenderIdByRoom = <String, String>{};
   final Map<String, DateTime> _lastMessageTimeByRoom = <String, DateTime>{};
   final Set<String> _seenCallEventIds = <String>{};
   final List<_QueuedIncomingCall> _incomingCallQueue = <_QueuedIncomingCall>[];
@@ -203,11 +207,11 @@ class MatrixRestService {
 
   ChatCallSnapshot _callSnapshot = const ChatCallSnapshot.idle();
   static const int _perfLogThresholdMs = 200;
+  static const bool _verbosePerfLogging = false;
   final MatrixRestCacheStore _cacheStore = MatrixRestCacheStore();
   List<ChatThread> _cachedThreads = const <ChatThread>[];
   final Map<String, List<ChatMessage>> _cachedMessagesByRoom =
       <String, List<ChatMessage>>{};
-  final Set<String> _didServeCachedMessagesRooms = <String>{};
   final Set<String> _roomMessageRefreshInFlight = <String>{};
   final Map<String, DateTime> _roomMessageRefreshAt = <String, DateTime>{};
   String? _cachedUserId;
@@ -222,6 +226,9 @@ class MatrixRestService {
     bool force = false,
   ]) {
     if (!kDebugMode) return;
+    if (!_verbosePerfLogging) {
+      return;
+    }
     if (!force && stopwatch.elapsedMilliseconds < _perfLogThresholdMs) {
       return;
     }
@@ -241,6 +248,40 @@ class MatrixRestService {
   RTCVideoRenderer? get localVideoRenderer => _localVideoRenderer;
   RTCVideoRenderer? get remoteVideoRenderer => _remoteVideoRenderer;
   MatrixTransportCapabilities get transportCapabilities => _core.capabilities;
+  String? cachedRoomAvatarUrl(String roomId) {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return null;
+    }
+    for (final thread in _cachedThreads) {
+      if (thread.id == normalizedRoomId) {
+        final avatarUrl = thread.avatarUrl?.trim();
+        return (avatarUrl == null || avatarUrl.isEmpty) ? null : avatarUrl;
+      }
+    }
+    return null;
+  }
+
+  String? cachedParticipantAvatarUrl(String roomId, String userId) {
+    final normalizedRoomId = roomId.trim();
+    final normalizedUserId = userId.trim();
+    if (normalizedRoomId.isEmpty || normalizedUserId.isEmpty) {
+      return null;
+    }
+
+    final participants = _participantsCache[normalizedRoomId];
+    if (participants == null) {
+      return null;
+    }
+
+    for (final participant in participants) {
+      if (participant.userId == normalizedUserId) {
+        final avatarUrl = participant.avatarUrl?.trim();
+        return (avatarUrl == null || avatarUrl.isEmpty) ? null : avatarUrl;
+      }
+    }
+    return null;
+  }
 
   bool get isLoggedIn => _initialized && _core.isLoggedIn;
   String? get currentUserId => _initialized ? _core.currentUserId : null;
@@ -284,7 +325,6 @@ class MatrixRestService {
     await _core.logout();
     _cachedThreads = const <ChatThread>[];
     _cachedMessagesByRoom.clear();
-    _didServeCachedMessagesRooms.clear();
     _typingUsersByRoom.clear();
     _readReceiptsByRoomEvent.clear();
     _participantsCache.clear();
@@ -300,7 +340,7 @@ class MatrixRestService {
     if (_cachedThreads.isNotEmpty && !_didServeCachedThreads) {
       _didServeCachedThreads = true;
       unawaited(_refreshSync(fullState: false));
-      _scheduleThreadIntegrityRepair(_cachedThreads);
+      _scheduleThreadIntegrityRepair(_cachedThreads, forceAll: true);
       onProgress?.call(0.98, 'Loading conversations...');
       _perfLog(
         'getJoinedThreads.cacheHit',
@@ -331,7 +371,7 @@ class MatrixRestService {
     // full-state round-trips on every thread refresh.
     if (joined.isEmpty && invited.isEmpty) {
       if (_cachedThreads.isNotEmpty) {
-        _scheduleThreadIntegrityRepair(_cachedThreads);
+        _scheduleThreadIntegrityRepair(_cachedThreads, forceAll: true);
         onProgress?.call(0.98, 'Loading conversations...');
         _perfLog(
           'getJoinedThreads.reuseCachedNoDelta',
@@ -397,21 +437,33 @@ class MatrixRestService {
           : (_lastMessageTimeByRoom[roomId] ??
                 _getRoomCreationDate(stateEvents) ??
                 DateTime.now());
-      final senderName = lastEvent != null
+      final cachedSenderEntry = _lastMessageSenderByRoom[roomId] ?? '';
+      final cachedIsMe = cachedSenderEntry == 'me';
+      final resolvedSenderName = lastEvent != null
           ? _eventSenderLabel(lastEvent, stateEvents)
-          : (_lastMessageSenderByRoom[roomId] ?? '');
+          : (cachedIsMe ? '' : cachedSenderEntry);
+      final senderName = resolvedSenderName;
       final previewBody = lastEvent != null
           ? _displayBodyFromEvent(lastEvent)
           : cachedPreview;
+      final lastEventSenderId = lastEvent != null
+          ? (lastEvent['sender'] ?? '').toString()
+          : '';
+      final isMe = lastEvent != null
+          ? (lastEventSenderId.isNotEmpty &&
+                lastEventSenderId == (currentUserId ?? ''))
+          : cachedIsMe;
       final body = _formatThreadPreview(
         senderName: senderName,
         body: previewBody,
+        isMe: isMe,
       );
       final existingThread = _cachedThreadById(roomId);
       if (lastEvent != null) {
         _lastMessageTimeByRoom[roomId] = updatedAt;
         _lastMessagePreviewByRoom[roomId] = previewBody;
-        _lastMessageSenderByRoom[roomId] = senderName;
+        _lastMessageSenderByRoom[roomId] = isMe ? 'me' : senderName;
+        _lastMessageSenderIdByRoom[roomId] = lastEventSenderId;
       }
       final unread = _notificationCount(roomData);
 
@@ -517,14 +569,75 @@ class MatrixRestService {
 
   Future<bool> joinRoomIfInvited(String roomId) async {
     await initialize();
+    Object? joinError;
+    StackTrace? joinErrorTrace;
     try {
       await _core.joinRoom(roomId);
-      await _refreshSync(fullState: true);
-      _emitSyncUpdate();
-      return true;
-    } catch (_) {
-      return false;
+    } catch (e, s) {
+      joinError = e;
+      joinErrorTrace = s;
+      debugPrint(
+        '[MatrixRestService] joinRoomIfInvited failed for $roomId: $e',
+      );
     }
+
+    // Poll sync until the room appears as `joined` (not `invited`) in the
+    // homeserver's sync response. The join POST returns 200 before the
+    // membership event is propagated, so immediately fetching messages would
+    // get M_FORBIDDEN. Retry up to ~5 seconds.
+    const maxAttempts = 5;
+    const retryDelay = Duration(milliseconds: 1000);
+    bool confirmedJoined = false;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        final sync = await _core.sync(timeoutMs: 0, fullState: true);
+        final rooms = _asMap(sync['rooms']);
+        final joined = _asMap(rooms['join']);
+        final invited = _asMap(rooms['invite']);
+        _applyThreadSyncDelta(joined: joined, invited: invited);
+        await _persistCache();
+        if (joined.containsKey(roomId)) {
+          confirmedJoined = true;
+          break;
+        }
+      } catch (e) {
+        debugPrint(
+          '[MatrixRestService] post-join sync attempt $attempt failed: $e',
+        );
+      }
+      await Future<void>.delayed(retryDelay);
+    }
+
+    if (joinError != null) {
+      // If the join call threw but the room is now confirmed joined
+      // (e.g. already accepted on another device), treat as success.
+      if (confirmedJoined) {
+        _emitSyncUpdate();
+        return true;
+      }
+      // Propagate the real Matrix error so the UI can surface the reason.
+      Error.throwWithStackTrace(
+        joinError,
+        joinErrorTrace ?? StackTrace.current,
+      );
+    }
+
+    _emitSyncUpdate();
+    return confirmedJoined;
+  }
+
+  Future<String> resolveRoomId(String roomIdOrAlias) async {
+    await initialize();
+    final normalized = roomIdOrAlias.trim();
+    if (normalized.isEmpty || normalized.startsWith('!')) {
+      return normalized;
+    }
+    if (!normalized.startsWith('#')) {
+      return normalized;
+    }
+
+    final resolved = await _core.resolveRoomAlias(normalized);
+    return resolved.trim().isEmpty ? normalized : resolved.trim();
   }
 
   Future<void> leaveRoom(String roomId) async {
@@ -535,7 +648,6 @@ class MatrixRestService {
         .where((thread) => thread.id != roomId)
         .toList(growable: false);
     _cachedMessagesByRoom.remove(roomId);
-    _didServeCachedMessagesRooms.remove(roomId);
     _roomMessageRefreshInFlight.remove(roomId);
     _roomMessageRefreshAt.remove(roomId);
     _typingUsersByRoom.remove(roomId);
@@ -543,6 +655,7 @@ class MatrixRestService {
     _participantsCacheAt.remove(roomId);
     _lastMessagePreviewByRoom.remove(roomId);
     _lastMessageSenderByRoom.remove(roomId);
+    _lastMessageSenderIdByRoom.remove(roomId);
     _lastMessageTimeByRoom.remove(roomId);
     _threadIntegrityRepairInFlight.remove(roomId);
     _userSearchCache.clear();
@@ -559,10 +672,7 @@ class MatrixRestService {
   }) async {
     final cachedMessages =
         _cachedMessagesByRoom[roomId] ?? const <ChatMessage>[];
-    if (allowCache &&
-        cachedMessages.isNotEmpty &&
-        !_didServeCachedMessagesRooms.contains(roomId)) {
-      _didServeCachedMessagesRooms.add(roomId);
+    if (allowCache && cachedMessages.isNotEmpty) {
       _scheduleRoomMessagesRefresh(roomId: roomId, limit: limit);
       _perfLog(
         'getRoomMessages.cacheHit',
@@ -729,7 +839,13 @@ class MatrixRestService {
           ..sort((a, b) {
             final aTs = _eventTimestamp(a);
             final bTs = _eventTimestamp(b);
-            return aTs.compareTo(bTs);
+            final byTs = aTs.compareTo(bTs);
+            if (byTs != 0) {
+              return byTs;
+            }
+            final aId = (a['event_id'] ?? '').toString();
+            final bId = (b['event_id'] ?? '').toString();
+            return aId.compareTo(bId);
           });
 
     final latestReadIndexByUserId = <String, int>{};
@@ -969,9 +1085,15 @@ class MatrixRestService {
         _lastMessagePreviewByRoom[roomId] = latest.body;
       }
       final senderLabel = _sanitizeSenderLabel(latest.senderName);
-      if (senderLabel.isNotEmpty) {
+      final latestIsMe =
+          (currentUserId ?? '').isNotEmpty &&
+          latest.senderId.trim() == (currentUserId ?? '').trim();
+      if (latestIsMe) {
+        _lastMessageSenderByRoom[roomId] = 'me';
+      } else if (senderLabel.isNotEmpty) {
         _lastMessageSenderByRoom[roomId] = senderLabel;
       }
+      _lastMessageSenderIdByRoom[roomId] = latest.senderId.trim();
       _lastMessageTimeByRoom[roomId] = latest.createdAt;
     }
 
@@ -1249,7 +1371,8 @@ class MatrixRestService {
         createdAt: now,
         metadata: <String, dynamic>{
           'sendStage': 'sent',
-          'mediaUrl': mxc,
+          'mediaUrl': _mxcToDownloadHttp(mxc) ?? mxc,
+          'thumbnailUrl': _mxcToThumbnailHttp(mxc),
           'mimeType': mimeType,
           'filename': filename,
           'caption': normalizedCaption,
@@ -2360,11 +2483,15 @@ class MatrixRestService {
     return results;
   }
 
-  Future<ChatUserPresence> getUserPresence(String userId) async {
+  Future<ChatUserPresence> getUserPresence(
+    String userId, {
+    bool forceRefresh = false,
+  }) async {
     await initialize();
     final cached = _presenceCache[userId];
     final cachedAt = _presenceCacheAt[userId];
-    if (cached != null &&
+    if (!forceRefresh &&
+        cached != null &&
         cachedAt != null &&
         DateTime.now().difference(cachedAt) < const Duration(seconds: 45)) {
       return cached;
@@ -2636,6 +2763,38 @@ class MatrixRestService {
         ..clear()
         ..addAll(snapshot.readReceiptsByRoomEvent);
       _core.restoreSinceToken(snapshot.sinceToken);
+      _lastMessageSenderByRoom
+        ..clear()
+        ..addAll(snapshot.lastMessageSenderByRoom);
+      _lastMessagePreviewByRoom
+        ..clear()
+        ..addAll(snapshot.lastMessagePreviewByRoom);
+
+      // Fix "You:" prefix: scan persisted messages to detect own last messages.
+      // This handles the case where no new sync event arrives for a room, so
+      // the cached thread lastMessage still shows "DisplayName: body" instead
+      // of "You: body".
+      final fixedThreads = <ChatThread>[];
+      for (final thread in _cachedThreads) {
+        final msgs = _cachedMessagesByRoom[thread.id];
+        final lm = (thread.lastMessage ?? '').trim();
+        if (msgs != null && msgs.isNotEmpty && lm.isNotEmpty) {
+          final lastMsg = msgs.reduce(
+            (a, b) => a.createdAt.isAfter(b.createdAt) ? a : b,
+          );
+          final isMe = lastMsg.senderId.trim() == userId;
+          if (isMe && !lm.startsWith('You: ')) {
+            final colonIdx = lm.indexOf(': ');
+            final fixed = colonIdx > 0
+                ? 'You: ${lm.substring(colonIdx + 2)}'
+                : 'You: $lm';
+            fixedThreads.add(thread.copyWith(lastMessage: fixed));
+            continue;
+          }
+        }
+        fixedThreads.add(thread);
+      }
+      _cachedThreads = fixedThreads;
       final hydratedCallSnapshot = _chatCallSnapshotFromMap(
         snapshot.callSnapshot,
       );
@@ -2679,6 +2838,12 @@ class MatrixRestService {
           _readReceiptsByRoomEvent,
         ),
         callSnapshot: _chatCallSnapshotToMap(_callSnapshot),
+        lastMessageSenderByRoom: Map<String, String>.from(
+          _lastMessageSenderByRoom,
+        ),
+        lastMessagePreviewByRoom: Map<String, String>.from(
+          _lastMessagePreviewByRoom,
+        ),
       );
     } catch (_) {
       // Cache writes are best-effort.
@@ -2691,11 +2856,11 @@ class MatrixRestService {
   }) {
     if (existing.isEmpty) {
       return List<ChatMessage>.from(incoming)
-        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+        ..sort(_compareMessagesForTimeline);
     }
     if (incoming.isEmpty) {
       return List<ChatMessage>.from(existing)
-        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+        ..sort(_compareMessagesForTimeline);
     }
 
     final byId = <String, ChatMessage>{};
@@ -2711,7 +2876,7 @@ class MatrixRestService {
       byId[message.id] = message;
     }
     final merged = byId.values.toList(growable: false)
-      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      ..sort(_compareMessagesForTimeline);
     return merged;
   }
 
@@ -2721,27 +2886,45 @@ class MatrixRestService {
   }) {
     if (incoming.isEmpty) {
       return List<ChatMessage>.from(existing)
-        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+        ..sort(_compareMessagesForTimeline);
     }
 
-    // For network refreshes, server results are authoritative for remote
-    // events. Preserve only local optimistic items that have not been replaced.
+    // For network refreshes, server results are authoritative for the returned
+    // window. Keep older cached messages outside that window to avoid
+    // truncating room history on each refresh (limit-based fetches).
     final byId = <String, ChatMessage>{
       for (final message in incoming)
         if (message.id.isNotEmpty) message.id: message,
     };
 
+    final oldestIncoming = incoming
+        .map((message) => message.createdAt)
+        .reduce((a, b) => a.isBefore(b) ? a : b);
+
     for (final message in existing) {
       final id = message.id;
-      if (id.isEmpty || !id.startsWith(_localMessagePrefix)) {
+      if (id.isEmpty) {
         continue;
       }
-      byId.putIfAbsent(id, () => message);
+
+      final isLocalOptimistic = id.startsWith(_localMessagePrefix);
+      final isOlderThanWindow = message.createdAt.isBefore(oldestIncoming);
+      if (isLocalOptimistic || isOlderThanWindow) {
+        byId.putIfAbsent(id, () => message);
+      }
     }
 
     final merged = byId.values.toList(growable: false)
-      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      ..sort(_compareMessagesForTimeline);
     return merged;
+  }
+
+  int _compareMessagesForTimeline(ChatMessage a, ChatMessage b) {
+    final byDate = a.createdAt.compareTo(b.createdAt);
+    if (byDate != 0) {
+      return byDate;
+    }
+    return a.id.compareTo(b.id);
   }
 
   List<ChatThread> _mergeThreadDelta({
@@ -2772,12 +2955,129 @@ class MatrixRestService {
     return merged;
   }
 
-  void _scheduleThreadIntegrityRepair(Iterable<ChatThread> threads) {
-    final roomIds = threads
-        .where(_needsThreadIntegrityRepair)
+  /// Forces a full integrity check on all cached threads regardless of their
+  /// current display state.  Rooms with incomplete data (missing title, missing
+  /// last-message, stale avatars) are re-fetched from the server.  A full-state
+  /// Matrix sync is run first so that rooms the client missed entirely are
+  /// discovered and added to the cache before the per-room repair pass runs.
+  ///
+  /// Returns the number of threads that were repaired / added.
+  Future<int> runFullIntegrityCheck({
+    void Function(double progress, String status)? onProgress,
+  }) async {
+    await initialize();
+    onProgress?.call(0.05, 'Syncing rooms from server…');
+
+    // Full-state sync so we don't miss any rooms.
+    final sync = await _core.sync(timeoutMs: 0, fullState: true);
+    _captureTyping(sync);
+    final roomsData = (sync['rooms'] as Map?) ?? const <String, dynamic>{};
+    final joined = (roomsData['join'] as Map?) ?? const <String, dynamic>{};
+    final invited = (roomsData['invite'] as Map?) ?? const <String, dynamic>{};
+
+    // Ensure every room from the server is at least a skeleton thread in cache.
+    final knownIds = _cachedThreads.map((t) => t.id).toSet();
+    var newRooms = 0;
+    for (final roomId in joined.keys) {
+      if (!knownIds.contains(roomId)) {
+        final stateEvents = _asList(
+          ((_asMap(joined[roomId]))['state'] as Object?),
+        );
+        final title = _roomTitle(roomId.toString(), stateEvents);
+        _cachedThreads = [
+          ..._cachedThreads,
+          ChatThread(
+            id: roomId.toString(),
+            title: title,
+            updatedAt: DateTime.now(),
+            lastMessage: '',
+            unreadCount: 0,
+            avatarUrl: _roomAvatarUrl(stateEvents),
+            type: ChatType.group,
+            isInvited: false,
+          ),
+        ];
+        newRooms++;
+      }
+    }
+    for (final roomId in invited.keys) {
+      if (!knownIds.contains(roomId)) {
+        _cachedThreads = [
+          ..._cachedThreads,
+          ChatThread(
+            id: roomId.toString(),
+            title: roomId.toString(),
+            updatedAt: DateTime.now(),
+            lastMessage: 'Invitation pending',
+            unreadCount: 0,
+            avatarUrl: null,
+            type: ChatType.group,
+            isInvited: true,
+          ),
+        ];
+        newRooms++;
+      }
+    }
+
+    onProgress?.call(0.25, 'Checking ${_cachedThreads.length} chats…');
+
+    // Run per-room integrity repair on ALL threads (not just broken ones).
+    final allIds = _cachedThreads.map((t) => t.id).toList(growable: false);
+    final batchSize = 8;
+    var repairedCount = newRooms;
+    for (var i = 0; i < allIds.length; i += batchSize) {
+      final batch = allIds.skip(i).take(batchSize).toList();
+      final before = List<ChatThread>.from(_cachedThreads);
+
+      // Temporarily remove from in-flight set so we can repair everything.
+      _threadIntegrityRepairInFlight.removeAll(batch);
+      _threadIntegrityRepairInFlight.addAll(batch);
+      await _repairThreadIntegrity(batch);
+
+      // Count how many threads changed.
+      for (final id in batch) {
+        final beforeThread = before.firstWhere(
+          (t) => t.id == id,
+          orElse: () => ChatThread(
+            id: id,
+            title: '',
+            updatedAt: DateTime.fromMillisecondsSinceEpoch(0),
+            lastMessage: '',
+            unreadCount: 0,
+            avatarUrl: null,
+            type: ChatType.group,
+            isInvited: false,
+          ),
+        );
+        final afterThread = _cachedThreadById(id);
+        if (afterThread != null &&
+            !_sameThreadDisplay(beforeThread, afterThread)) {
+          repairedCount++;
+        }
+      }
+
+      final done = (i + batch.length).clamp(0, allIds.length);
+      onProgress?.call(
+        0.25 + 0.70 * (done / allIds.length),
+        'Checking chats… $done / ${allIds.length}',
+      );
+    }
+
+    onProgress?.call(1.0, 'Done');
+    return repairedCount;
+  }
+
+  void _scheduleThreadIntegrityRepair(
+    Iterable<ChatThread> threads, {
+    bool forceAll = false,
+  }) {
+    final candidateThreads = forceAll
+        ? threads
+        : threads.where(_needsThreadIntegrityRepair);
+    final roomIds = candidateThreads
         .map((thread) => thread.id)
         .where((roomId) => !_threadIntegrityRepairInFlight.contains(roomId))
-        .take(8)
+        .take(forceAll ? 24 : 8)
         .toList(growable: false);
     if (roomIds.isEmpty) {
       return;
@@ -2904,12 +3204,18 @@ class MatrixRestService {
         updatedAt = _roomEventDate(latestEvent, stateEvents);
         final senderName = _eventSenderLabel(latestEvent, stateEvents);
         final previewBody = _displayBodyFromEvent(latestEvent);
+        final latestEventSenderId = (latestEvent['sender'] ?? '').toString();
+        final latestIsMe =
+            latestEventSenderId.isNotEmpty &&
+            latestEventSenderId == (currentUserId ?? '');
         lastMessage = _formatThreadPreview(
           senderName: senderName,
           body: previewBody,
+          isMe: latestIsMe,
         );
         _lastMessageTimeByRoom[existing.id] = updatedAt;
-        _lastMessageSenderByRoom[existing.id] = senderName;
+        _lastMessageSenderByRoom[existing.id] = latestIsMe ? 'me' : senderName;
+        _lastMessageSenderIdByRoom[existing.id] = latestEventSenderId;
         _lastMessagePreviewByRoom[existing.id] = previewBody;
       }
     }
@@ -2936,9 +3242,9 @@ class MatrixRestService {
     required String previewBody,
     required DateTime createdAt,
   }) {
-    final senderName = 'You';
     _lastMessagePreviewByRoom[roomId] = previewBody;
-    _lastMessageSenderByRoom[roomId] = senderName;
+    _lastMessageSenderByRoom[roomId] = 'me';
+    _lastMessageSenderIdByRoom[roomId] = currentUserId ?? '';
     _lastMessageTimeByRoom[roomId] = createdAt;
 
     final threadIndex = _cachedThreads.indexWhere(
@@ -2951,8 +3257,9 @@ class MatrixRestService {
     final updatedThread = _cachedThreads[threadIndex].copyWith(
       updatedAt: createdAt,
       lastMessage: _formatThreadPreview(
-        senderName: senderName,
+        senderName: '',
         body: previewBody,
+        isMe: true,
       ),
     );
     final mutable = List<ChatThread>.from(_cachedThreads);
@@ -3284,9 +3591,6 @@ class MatrixRestService {
     for (final entry in joined.entries) {
       final roomId = entry.key.toString();
       final existing = byId[roomId];
-      if (existing == null) {
-        continue;
-      }
       final roomData = _asMap(entry.value);
       final stateEvents = _asList(roomData['state']);
       if (stateEvents.isNotEmpty) {
@@ -3294,13 +3598,26 @@ class MatrixRestService {
       }
       final timelineEnvelope = _asMap(roomData['timeline']);
       final timelineEvents = _asList(timelineEnvelope['events']);
+      // existing may be null if the room was an invite that just got accepted
+      // (invite entries are separate) or is brand new. Build a minimal
+      // placeholder so it gets added to the cache.
+      final effectiveExisting =
+          existing ??
+          ChatThread(
+            id: roomId,
+            title: roomId,
+            updatedAt: DateTime.now(),
+            unreadCount: 0,
+            type: ChatType.group,
+            isInvited: false,
+          );
       byId[roomId] = _mergeThreadDisplayFallbacks(
         _threadFromSyncDelta(
           roomId: roomId,
           roomData: roomData,
           stateEvents: stateEvents,
           timelineEvents: timelineEvents,
-          existing: existing,
+          existing: effectiveExisting,
           isInvited: false,
         ),
         existing: existing,
@@ -3380,19 +3697,33 @@ class MatrixRestService {
     final updatedAt = lastEvent != null
         ? _roomEventDate(lastEvent, stateEvents)
         : existing.updatedAt;
+    final incSenderEntry = _lastMessageSenderByRoom[roomId] ?? '';
+    final incCachedIsMe = incSenderEntry == 'me';
     final senderName = lastEvent != null
         ? _eventSenderLabel(lastEvent, stateEvents)
-        : (_lastMessageSenderByRoom[roomId] ?? '');
+        : (incCachedIsMe ? '' : incSenderEntry);
     final previewBody = lastEvent != null
         ? _displayBodyFromEvent(lastEvent)
         : (_lastMessagePreviewByRoom[roomId] ?? '');
+    final lastEventSenderId = lastEvent != null
+        ? (lastEvent['sender'] ?? '').toString()
+        : '';
+    final incIsMe = lastEvent != null
+        ? (lastEventSenderId.isNotEmpty &&
+              lastEventSenderId == (currentUserId ?? ''))
+        : incCachedIsMe;
     if (lastEvent != null) {
       _lastMessageTimeByRoom[roomId] = updatedAt;
-      _lastMessageSenderByRoom[roomId] = senderName;
+      _lastMessageSenderByRoom[roomId] = incIsMe ? 'me' : senderName;
+      _lastMessageSenderIdByRoom[roomId] = lastEventSenderId;
       _lastMessagePreviewByRoom[roomId] = previewBody;
     }
     final lastMessage = previewBody.trim().isNotEmpty
-        ? _formatThreadPreview(senderName: senderName, body: previewBody)
+        ? _formatThreadPreview(
+            senderName: senderName,
+            body: previewBody,
+            isMe: incIsMe,
+          )
         : existing.lastMessage;
 
     return existing.copyWith(
@@ -3994,8 +4325,9 @@ class MatrixRestService {
   String _formatThreadPreview({
     required String senderName,
     required String body,
+    bool isMe = false,
   }) {
-    final sender = senderName.trim();
+    final sender = isMe ? 'You' : senderName.trim();
     final preview = body.trim();
     if (sender.isEmpty || preview.isEmpty) {
       return preview;
@@ -4256,6 +4588,9 @@ class MatrixRestService {
   String? _mediaUrl(Map<String, dynamic> content) {
     final direct = _mxcToDownloadHttp(content['url']);
     if ((direct ?? '').isNotEmpty) return direct;
+    final encrypted = _asMap(content['file']);
+    final encryptedUrl = _mxcToDownloadHttp(encrypted['url']);
+    if ((encryptedUrl ?? '').isNotEmpty) return encryptedUrl;
     return null;
   }
 
@@ -4263,6 +4598,9 @@ class MatrixRestService {
     final info = _asMap(content['info']);
     final thumb = _mxcToThumbnailHttp(info['thumbnail_url']);
     if ((thumb ?? '').isNotEmpty) return thumb;
+    final thumbFile = _asMap(info['thumbnail_file']);
+    final encryptedThumb = _mxcToThumbnailHttp(thumbFile['url']);
+    if ((encryptedThumb ?? '').isNotEmpty) return encryptedThumb;
     return _mxcToThumbnailHttp(content['url']);
   }
 

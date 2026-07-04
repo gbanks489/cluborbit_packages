@@ -12,6 +12,7 @@ class ErrorNotifier extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
 
   void setError(String message) {
+    debugPrint('[ErrorNotifier] $message');
     _errorMessage = message;
     notifyListeners();
   }

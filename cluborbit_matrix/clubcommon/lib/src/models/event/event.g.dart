@@ -25,7 +25,7 @@ Map<String, dynamic> _$EventDateToJson(EventDate instance) => <String, dynamic>{
 };
 
 const _$EventStatusEnumMap = {
-  EventStatus.canceled: 'canceled',
+  EventStatus.cancelled: 'cancelled',
   EventStatus.active: 'active',
   EventStatus.completed: 'completed',
 };

@@ -73,6 +73,8 @@ class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
           controller: _controller,
           focusNode: _focusNode,
           onChanged: _emitChanged,
+          cursorColor: Colors.white,
+          selectionControls: MaterialTextSelectionControls(),
           style: const TextStyle(
             fontFamily: 'Poppins',
             color: Colors.white,

@@ -184,14 +184,23 @@ class _SignalReceiptTicks extends StatelessWidget {
     required this.isSent,
     required this.showReceivedCircle,
     required this.isRead,
+    this.isFailed = false,
   });
 
   final bool isSent;
   final bool showReceivedCircle;
   final bool isRead;
+  final bool isFailed;
 
   @override
   Widget build(BuildContext context) {
+    if (isFailed) {
+      return const Icon(
+        Icons.error_outline,
+        size: 14,
+        color: Color(0xFFFF6B6B),
+      );
+    }
     Widget circle({required bool active, required bool shouldBeFilled}) {
       final fill = shouldBeFilled
           ? const Color(0xFFB6D8FF)

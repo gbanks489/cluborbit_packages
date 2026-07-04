@@ -1,0 +1,11 @@
+[package]
+name = "cluborbit_matrix_native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+flutter_rust_bridge = "2.11"
+vodozemac = "0.9"

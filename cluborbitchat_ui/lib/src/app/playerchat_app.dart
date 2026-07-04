@@ -251,6 +251,7 @@ class _GlobalMatrixBootstrapLayerState
     extends State<_GlobalMatrixBootstrapLayer> {
   ChatController? _controller;
   PushNotificationService? _pushNotifications;
+  String? _lastPushSyncKey;
 
   @override
   void didChangeDependencies() {
@@ -281,10 +282,13 @@ class _GlobalMatrixBootstrapLayerState
 
     final roomId = (message.data['room_id'] ?? '').toString().trim();
     final eventId = (message.data['event_id'] ?? '').toString().trim();
+    if (roomId.isEmpty) {
+      return;
+    }
     debugPrint(
       '[FCM][sync-request] roomId=$roomId eventId=$eventId activeRoom=${controller.activeRoomId ?? ''}',
     );
-    await controller.refreshFromPush(roomId: roomId);
+    await controller.refreshFromPush(roomId: roomId, eventId: eventId);
   }
 
   void _ensureMatrixSync() {
@@ -292,9 +296,19 @@ class _GlobalMatrixBootstrapLayerState
     if (!mounted || controller == null) {
       return;
     }
-    unawaited(_pushNotifications?.syncForCurrentSession() ?? Future.value());
     if (!controller.hasFirebaseSession) {
+      _lastPushSyncKey = null;
       return;
+    }
+    final matrixUserId = controller.matrixUserId.trim();
+    if (matrixUserId.isNotEmpty) {
+      final syncKey = '${controller.currentUserId}|$matrixUserId';
+      if (_lastPushSyncKey != syncKey) {
+        _lastPushSyncKey = syncKey;
+        unawaited(
+          _pushNotifications?.syncForCurrentSession() ?? Future.value(),
+        );
+      }
     }
     if (controller.matrixUserId.isNotEmpty || controller.matrixConnecting) {
       return;

@@ -317,6 +317,25 @@ class MatrixLowLevelClient implements MatrixTransportClient {
     return const <dynamic>[];
   }
 
+  Future<String> resolveRoomAlias(String roomAlias) async {
+    final alias = roomAlias.trim();
+    if (alias.isEmpty || alias.startsWith('!')) {
+      return alias;
+    }
+
+    final encodedAlias = Uri.encodeComponent(alias);
+    final res = await _requestJson(
+      method: 'GET',
+      uri: _clientUri('/directory/room/$encodedAlias'),
+      headers: _authHeaders(json: false),
+    );
+    final roomId = (res['room_id'] ?? '').toString().trim();
+    if (roomId.isEmpty) {
+      throw StateError('Matrix alias resolution failed for $alias');
+    }
+    return roomId;
+  }
+
   Future<Map<String, dynamic>> getMembers(String roomId) {
     return _requestJson(
       method: 'GET',
@@ -360,8 +379,13 @@ class MatrixLowLevelClient implements MatrixTransportClient {
     required String url,
     String lang = 'en',
     String profileTag = 'mobile',
-    String format = 'event_id_only',
+    String? format,
   }) async {
+    final pusherData = <String, dynamic>{'url': url};
+    if ((format ?? '').trim().isNotEmpty) {
+      pusherData['format'] = format;
+    }
+
     await _requestJson(
       method: 'POST',
       uri: _clientUri('/pushers/set'),
@@ -374,7 +398,7 @@ class MatrixLowLevelClient implements MatrixTransportClient {
         'pushkey': pushKey,
         'lang': lang,
         'profile_tag': profileTag,
-        'data': <String, dynamic>{'url': url, 'format': format},
+        'data': pusherData,
       }),
     );
   }

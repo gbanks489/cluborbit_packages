@@ -56,12 +56,27 @@ class ChatAppearanceStore {
     }
 
     final database = await _openDatabase();
-    final rows = await database.query(
-      _tableName,
-      where: 'chat_key = ?',
-      whereArgs: <Object?>[normalizedKey],
-      limit: 1,
-    );
+    await _ensureTableExists(database);
+    List<Map<String, Object?>> rows;
+    try {
+      rows = await database.query(
+        _tableName,
+        where: 'chat_key = ?',
+        whereArgs: <Object?>[normalizedKey],
+        limit: 1,
+      );
+    } on sqflite.DatabaseException catch (error) {
+      if (!_isMissingTableError(error)) {
+        rethrow;
+      }
+      await _ensureTableExists(database);
+      rows = await database.query(
+        _tableName,
+        where: 'chat_key = ?',
+        whereArgs: <Object?>[normalizedKey],
+        limit: 1,
+      );
+    }
     if (rows.isEmpty) {
       return null;
     }
@@ -102,15 +117,32 @@ class ChatAppearanceStore {
     }
 
     final database = await _openDatabase();
-    await database.insert(_tableName, <String, Object?>{
-      'chat_key': normalizedKey,
-      'my_bubble_color': record.myBubbleColorValue,
-      'other_bubble_color': record.otherBubbleColorValue,
-      'message_text_color': record.messageTextColorValue,
-      'message_font_family': record.messageFontFamily,
-      'background_image_url': record.backgroundImageUrl,
-      'updated_at_ms': DateTime.now().millisecondsSinceEpoch,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    await _ensureTableExists(database);
+    try {
+      await database.insert(_tableName, <String, Object?>{
+        'chat_key': normalizedKey,
+        'my_bubble_color': record.myBubbleColorValue,
+        'other_bubble_color': record.otherBubbleColorValue,
+        'message_text_color': record.messageTextColorValue,
+        'message_font_family': record.messageFontFamily,
+        'background_image_url': record.backgroundImageUrl,
+        'updated_at_ms': DateTime.now().millisecondsSinceEpoch,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    } on sqflite.DatabaseException catch (error) {
+      if (!_isMissingTableError(error)) {
+        rethrow;
+      }
+      await _ensureTableExists(database);
+      await database.insert(_tableName, <String, Object?>{
+        'chat_key': normalizedKey,
+        'my_bubble_color': record.myBubbleColorValue,
+        'other_bubble_color': record.otherBubbleColorValue,
+        'message_text_color': record.messageTextColorValue,
+        'message_font_family': record.messageFontFamily,
+        'background_image_url': record.backgroundImageUrl,
+        'updated_at_ms': DateTime.now().millisecondsSinceEpoch,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
     _cache[normalizedKey] = record;
   }
 
@@ -139,6 +171,9 @@ class ChatAppearanceStore {
         onCreate: (database, version) async {
           await database.execute(_createTableSql);
         },
+        onOpen: (database) async {
+          await database.execute(_createTableIfNotExistsSql);
+        },
       );
     }
 
@@ -153,13 +188,26 @@ class ChatAppearanceStore {
         onCreate: (database, version) async {
           await database.execute(_createTableSql);
         },
+        onOpen: (database) async {
+          await database.execute(_createTableIfNotExistsSql);
+        },
       ),
     );
   }
 
   Future<void> _loadAllIntoCache() async {
     final database = await _openDatabase();
-    final rows = await database.query(_tableName);
+    await _ensureTableExists(database);
+    List<Map<String, Object?>> rows;
+    try {
+      rows = await database.query(_tableName);
+    } on sqflite.DatabaseException catch (error) {
+      if (!_isMissingTableError(error)) {
+        rethrow;
+      }
+      await _ensureTableExists(database);
+      rows = await database.query(_tableName);
+    }
     final nextCache = <String, ChatAppearanceRecord>{};
     for (final row in rows) {
       final rawChatKey = row['chat_key'];
@@ -201,6 +249,27 @@ CREATE TABLE $_tableName (
   updated_at_ms INTEGER NOT NULL
 )
 ''';
+
+  static const String _createTableIfNotExistsSql =
+      '''
+CREATE TABLE IF NOT EXISTS $_tableName (
+  chat_key TEXT PRIMARY KEY,
+  my_bubble_color INTEGER NOT NULL,
+  other_bubble_color INTEGER NOT NULL,
+  message_text_color INTEGER NOT NULL,
+  message_font_family TEXT NOT NULL,
+  background_image_url TEXT,
+  updated_at_ms INTEGER NOT NULL
+)
+''';
+
+  Future<void> _ensureTableExists(Database database) {
+    return database.execute(_createTableIfNotExistsSql);
+  }
+
+  bool _isMissingTableError(Object error) {
+    return error.toString().contains('no such table: $_tableName');
+  }
 
   int? _asInt(Object? value) {
     if (value is int) {

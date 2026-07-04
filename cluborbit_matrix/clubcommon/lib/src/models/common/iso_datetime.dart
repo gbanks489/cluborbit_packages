@@ -1,7 +1,5 @@
 import 'package:flutter/foundation.dart';
-import 'package:json_annotation/json_annotation.dart';
 
-@JsonSerializable()
 class IsoDateTime {
   final DateTime dateTime;
 

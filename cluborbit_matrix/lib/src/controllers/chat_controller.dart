@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:image/image.dart' as img;
 import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuthException;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -11,6 +12,8 @@ import 'package:clubcommon/clubcommon.dart';
 
 import '../services/auth_service.dart';
 import '../services/chat_thread_preferences_store.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../services/connectivity_service.dart';
 import '../services/incoming_call_settings_store.dart';
 import '../services/matrix_rest_service.dart';
@@ -96,6 +99,9 @@ class ChatController extends ChangeNotifier {
   List<VerificationSession> _verificationSessions =
       const <VerificationSession>[];
   final Map<String, Set<String>> _deletedForMeMessageIdsByRoom =
+      <String, Set<String>>{};
+  final Map<String, int> _pendingPushUnreadCounts = <String, int>{};
+  final Map<String, Set<String>> _pendingPushEventIdsByRoom =
       <String, Set<String>>{};
   Set<String> _mutedRoomIds = const <String>{};
   Set<String> _pinnedRoomIds = const <String>{};
@@ -244,10 +250,106 @@ class ChatController extends ChangeNotifier {
   }
 
   ChatThread _applyThreadPreferences(ChatThread thread) {
-    if (_forcedUnreadRoomIds.contains(thread.id) && thread.unreadCount == 0) {
-      return thread.copyWith(unreadCount: 1);
+    final resolvedUnreadCount = _resolveUnreadCount(thread);
+    if (resolvedUnreadCount != thread.unreadCount) {
+      return thread.copyWith(unreadCount: resolvedUnreadCount);
     }
     return thread;
+  }
+
+  int _resolveUnreadCount(ChatThread thread) {
+    var unreadCount = thread.unreadCount;
+    final pendingPushUnreadCount = _pendingPushUnreadCounts[thread.id];
+    if (pendingPushUnreadCount != null &&
+        pendingPushUnreadCount > unreadCount) {
+      unreadCount = pendingPushUnreadCount;
+    }
+    if (_forcedUnreadRoomIds.contains(thread.id) && unreadCount == 0) {
+      unreadCount = 1;
+    }
+    return unreadCount;
+  }
+
+  void _recordPendingPushUnread(String roomId, {String? eventId}) {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return;
+    }
+
+    final normalizedEventId = eventId?.trim();
+    if (normalizedEventId != null && normalizedEventId.isNotEmpty) {
+      final knownEventIds = _pendingPushEventIdsByRoom.putIfAbsent(
+        normalizedRoomId,
+        () => <String>{},
+      );
+      if (!knownEventIds.add(normalizedEventId)) {
+        return;
+      }
+    }
+
+    var baseUnreadCount = 0;
+    for (final thread in _threads) {
+      if (thread.id == normalizedRoomId) {
+        baseUnreadCount = _resolveUnreadCount(thread);
+        break;
+      }
+    }
+
+    final nextUnreadCount = baseUnreadCount > 0 ? baseUnreadCount + 1 : 1;
+    _pendingPushUnreadCounts[normalizedRoomId] = nextUnreadCount;
+  }
+
+  void _clearPendingPushUnread(String roomId) {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return;
+    }
+    _pendingPushUnreadCounts.remove(normalizedRoomId);
+    _pendingPushEventIdsByRoom.remove(normalizedRoomId);
+  }
+
+  void _reconcilePendingPushUnreadCounts() {
+    if (_pendingPushUnreadCounts.isEmpty) {
+      return;
+    }
+
+    final resolvedServerUnreadByRoom = <String, int>{
+      for (final thread in _threads) thread.id: thread.unreadCount,
+    };
+
+    final roomsToClear = <String>[];
+    _pendingPushUnreadCounts.forEach((roomId, pendingUnreadCount) {
+      final serverUnreadCount = resolvedServerUnreadByRoom[roomId];
+      if (serverUnreadCount != null &&
+          serverUnreadCount >= pendingUnreadCount) {
+        roomsToClear.add(roomId);
+      }
+    });
+
+    for (final roomId in roomsToClear) {
+      _clearPendingPushUnread(roomId);
+    }
+  }
+
+  void _clearActiveRoomUnreadState(String roomId) {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return;
+    }
+
+    _clearPendingPushUnread(normalizedRoomId);
+    _threads = _threads
+        .map(
+          (thread) => thread.id == normalizedRoomId
+              ? thread.copyWith(unreadCount: 0)
+              : thread,
+        )
+        .toList(growable: false);
+    if (_forcedUnreadRoomIds.remove(normalizedRoomId)) {
+      unawaited(
+        _threadPreferencesStore.setForcedUnread(normalizedRoomId, false),
+      );
+    }
   }
 
   Future<void> _persistIncomingCallUxSettings() async {
@@ -530,6 +632,44 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  /// Disconnects the Matrix session and clears all local chat state, without
+  /// signing out of Firebase. Use this when the Firebase user has already
+  /// changed and you need to reset Matrix before connecting as the new user.
+  Future<void> disconnectMatrix() async {
+    try {
+      await _syncSubscription?.cancel();
+      _syncSubscription = null;
+      _lastBackgroundConnectAttemptUid = null;
+      _setMatrixConnecting(false, progress: 0, status: 'Preparing chats...');
+      await _matrixService.logout();
+      unawaited(() async {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove('homeserver_url');
+          await prefs.remove('access_token');
+        } catch (_) {}
+      }());
+
+      _query = '';
+      _activeRoomId = null;
+      _activeRoomTitle = null;
+      _threads = const <ChatThread>[];
+      _searchedUsers = const <ChatParticipant>[];
+      _messages = const <ChatMessage>[];
+      _participants = const <ChatParticipant>[];
+      _typingUsers = const <ChatParticipant>[];
+      _verificationSessions = const <VerificationSession>[];
+      _activeRoomEncryptionStatus = const ChatEncryptionStatus.unencrypted();
+      _replyToMessage = null;
+      _userProfile = null;
+      _errorNotifier.clear();
+    } catch (_) {
+      // Best-effort teardown — do not rethrow.
+    } finally {
+      notifyListeners();
+    }
+  }
+
   Future<void> logout() async {
     _setLoading(true);
     try {
@@ -690,16 +830,21 @@ class ChatController extends ChangeNotifier {
   Future<void> openRoom(String roomId, {String? roomTitle}) async {
     _activeRoomId = roomId;
     _activeRoomTitle = roomTitle;
+    _messages = const <ChatMessage>[];
+    _participants = const <ChatParticipant>[];
+    _typingUsers = const <ChatParticipant>[];
+    _verificationSessions = const <VerificationSession>[];
+    _activeRoomEncryptionStatus = const ChatEncryptionStatus.unencrypted();
+    _replyToMessage = null;
     _setLoading(true);
+    notifyListeners();
     try {
       _messages = _applyDeleteForMeFilter(
         roomId,
         await _matrixService.getRoomMessages(roomId),
       );
       await _matrixService.setReadMarker(roomId);
-      if (_forcedUnreadRoomIds.remove(roomId)) {
-        unawaited(_threadPreferencesStore.setForcedUnread(roomId, false));
-      }
+      _clearActiveRoomUnreadState(roomId);
       _participants = await _matrixService.getRoomParticipants(roomId);
       _typingUsers = await _matrixService.getTypingUsers(roomId);
       _activeRoomEncryptionStatus = await _matrixService
@@ -707,7 +852,10 @@ class ChatController extends ChangeNotifier {
       _verificationSessions = _matrixService.getVerificationSessions();
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      // Don't call setError here — openRoom always rethrows so the caller
+      // (openRoomInBackground or a direct await site) is responsible for
+      // deciding whether/how to surface the error. Reporting here would cause
+      // double-notifications when called via openRoomInBackground.
       rethrow;
     } finally {
       _setLoading(false);
@@ -718,13 +866,92 @@ class ChatController extends ChangeNotifier {
   void openRoomInBackground(String roomId, {String? roomTitle}) {
     unawaited(
       openRoom(roomId, roomTitle: roomTitle).catchError((Object error) {
-        _errorNotifier.setError(error.toString());
+        // Membership timing errors (M_FORBIDDEN) during invite→join transitions
+        // are expected and should not be shown to the user.
+        if (!_isMembershipError(error)) {
+          _errorNotifier.setError(error.toString());
+        }
       }),
     );
   }
 
+  void clearActiveRoom({String? roomId}) {
+    final normalizedRoomId = roomId?.trim();
+    if (normalizedRoomId != null &&
+        normalizedRoomId.isNotEmpty &&
+        _activeRoomId != normalizedRoomId) {
+      return;
+    }
+    if (_activeRoomId == null &&
+        _activeRoomTitle == null &&
+        _messages.isEmpty &&
+        _participants.isEmpty &&
+        _typingUsers.isEmpty &&
+        _verificationSessions.isEmpty) {
+      return;
+    }
+
+    _activeRoomId = null;
+    _activeRoomTitle = null;
+    _messages = const <ChatMessage>[];
+    _participants = const <ChatParticipant>[];
+    _typingUsers = const <ChatParticipant>[];
+    _verificationSessions = const <VerificationSession>[];
+    _activeRoomEncryptionStatus = const ChatEncryptionStatus.unencrypted();
+    _replyToMessage = null;
+    notifyListeners();
+  }
+
   Future<bool> joinRoomIfInvited(String roomId) {
     return _matrixService.joinRoomIfInvited(roomId);
+  }
+
+  Future<String> resolveRoomForNavigation(String roomIdOrAlias) async {
+    final normalized = Uri.decodeComponent(roomIdOrAlias).trim();
+    if (normalized.isEmpty) {
+      return normalized;
+    }
+
+    for (final thread in _threads) {
+      if (thread.id == normalized ||
+          Uri.encodeComponent(thread.id) == roomIdOrAlias) {
+        return thread.id;
+      }
+    }
+
+    try {
+      return await _matrixService.resolveRoomId(normalized);
+    } catch (error) {
+      debugPrint(
+        '[ChatController.resolveRoomForNavigation] fallback to raw identifier=$normalized error=$error',
+      );
+      return normalized;
+    }
+  }
+
+  /// Runs a full background integrity check across all cached threads.
+  /// Performs a full-state sync then repairs every room that has incomplete or
+  /// stale data (missing title, last-message, or avatar).  Any rooms that were
+  /// entirely missing from the local cache are added.
+  ///
+  /// [onProgress] receives values in [0, 1] with a human-readable status.
+  /// Returns the number of threads repaired or newly discovered.
+  Future<int> runIntegrityCheck({
+    void Function(double progress, String status)? onProgress,
+  }) async {
+    try {
+      final count = await _matrixService.runFullIntegrityCheck(
+        onProgress: onProgress,
+      );
+      await _refreshFromSync();
+      notifyListeners();
+      return count;
+    } catch (e) {
+      if (!_isTransientNetworkError(e)) {
+        _errorNotifier.setError(e.toString());
+      }
+      return 0;
+    }
   }
 
   Future<void> refreshChatDetails() async {
@@ -732,17 +959,39 @@ class ChatController extends ChangeNotifier {
     if (roomId == null) {
       return;
     }
-    _participants = await _matrixService.getRoomParticipants(roomId);
-    _activeRoomEncryptionStatus = await _matrixService.getRoomEncryptionStatus(
-      roomId,
-    );
+    try {
+      _participants = await _matrixService.getRoomParticipants(roomId);
+    } catch (error) {
+      debugPrint(
+        '[ChatController.refreshChatDetails] participants error=$error',
+      );
+      _errorNotifier.setError(error.toString());
+      _participants = const <ChatParticipant>[];
+    }
+
+    try {
+      _activeRoomEncryptionStatus = await _matrixService
+          .getRoomEncryptionStatus(roomId);
+    } catch (error) {
+      debugPrint('[ChatController.refreshChatDetails] encryption error=$error');
+      _errorNotifier.setError(error.toString());
+      _activeRoomEncryptionStatus = const ChatEncryptionStatus.unencrypted();
+    }
+
     _verificationSessions = _matrixService.getVerificationSessions();
     notifyListeners();
   }
 
-  Future<void> refreshFromPush({String? roomId}) async {
+  Future<void> refreshFromPush({String? roomId, String? eventId}) async {
     if (!hasFirebaseSession) {
       return;
+    }
+    final normalizedRoomId = roomId?.trim();
+    if (normalizedRoomId != null &&
+        normalizedRoomId.isNotEmpty &&
+        normalizedRoomId != _activeRoomId) {
+      _recordPendingPushUnread(normalizedRoomId, eventId: eventId);
+      notifyListeners();
     }
     if (matrixUserId.isEmpty) {
       await connectMatrixUsingProfileInBackground();
@@ -751,7 +1000,6 @@ class ChatController extends ChangeNotifier {
 
     await _refreshFromSync();
 
-    final normalizedRoomId = roomId?.trim();
     if (normalizedRoomId != null &&
         normalizedRoomId.isNotEmpty &&
         normalizedRoomId == _activeRoomId) {
@@ -765,7 +1013,11 @@ class ChatController extends ChangeNotifier {
 
   Future<void> sendText(String text) async {
     final roomId = _activeRoomId;
-    if (roomId == null || text.trim().isEmpty) {
+    if (roomId == null) {
+      _errorNotifier.setError('No active chat room — please re-open the chat.');
+      return;
+    }
+    if (text.trim().isEmpty) {
       return;
     }
 
@@ -837,7 +1089,7 @@ class ChatController extends ChangeNotifier {
         replacement: sent,
       );
       notifyListeners();
-    } catch (e) {
+    } catch (e, s) {
       _matrixService.markStagedMessageFailed(optimistic);
       _messages = _replaceActiveMessage(
         previousId: optimistic.id,
@@ -848,6 +1100,7 @@ class ChatController extends ChangeNotifier {
           },
         ),
       );
+      debugPrint('[ChatController] sendOptimisticTextMessage failed: $e\n$s');
       _errorNotifier.setError(e.toString());
       notifyListeners();
     }
@@ -930,6 +1183,48 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<String> createDm(String userId, {String? roomTitle}) async {
+    // Check for an existing DM room with this user before creating a new one.
+    final normalizedUserId = userId.trim();
+    ChatThread? invitedThread;
+    for (final thread in _threads) {
+      if (thread.type != ChatType.dm) continue;
+      final counterpart = _matrixService.cachedDirectMessageCounterpart(
+        thread.id,
+      );
+      if (counterpart != null && counterpart.userId == normalizedUserId) {
+        if (thread.isInvited) {
+          // Keep track of the invite so we can accept it below.
+          invitedThread = thread;
+          continue;
+        }
+        // Already a joined member — open the existing room directly.
+        _activeRoomId = thread.id;
+        _activeRoomTitle = roomTitle ?? thread.title;
+        notifyListeners();
+        openRoomInBackground(thread.id, roomTitle: _activeRoomTitle);
+        return thread.id;
+      }
+    }
+
+    // If we found an invite, accept it instead of creating a new room.
+    if (invitedThread != null) {
+      final joined = await _matrixService.joinRoomIfInvited(invitedThread.id);
+      if (joined) {
+        _activeRoomId = invitedThread.id;
+        _activeRoomTitle = roomTitle ?? invitedThread.title;
+        _messages = const <ChatMessage>[];
+        _participants = const <ChatParticipant>[];
+        _typingUsers = const <ChatParticipant>[];
+        _verificationSessions = const <VerificationSession>[];
+        _activeRoomEncryptionStatus = const ChatEncryptionStatus.unencrypted();
+        notifyListeners();
+        unawaited(loadThreads());
+        openRoomInBackground(invitedThread.id, roomTitle: _activeRoomTitle);
+        return invitedThread.id;
+      }
+      // If the join failed fall through and create a fresh room.
+    }
+
     final roomId = await _matrixService.createDirectMessage(
       otherUserId: userId,
     );
@@ -947,8 +1242,11 @@ class ChatController extends ChangeNotifier {
     return roomId;
   }
 
-  Future<ChatUserPresence> getUserPresence(String userId) {
-    return _matrixService.getUserPresence(userId);
+  Future<ChatUserPresence> getUserPresence(
+    String userId, {
+    bool forceRefresh = false,
+  }) {
+    return _matrixService.getUserPresence(userId, forceRefresh: forceRefresh);
   }
 
   ChatUserPresence? cachedUserPresence(String userId) {
@@ -1038,6 +1336,24 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  Future<void> clearRoomUnreadMark(String roomId) async {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return;
+    }
+
+    _clearPendingPushUnread(normalizedRoomId);
+    if (_forcedUnreadRoomIds.remove(normalizedRoomId)) {
+      notifyListeners();
+      try {
+        await _threadPreferencesStore.setForcedUnread(normalizedRoomId, false);
+      } catch (e) {
+        _errorNotifier.setError(e.toString());
+        rethrow;
+      }
+    }
+  }
+
   Future<void> leaveRoom(String roomId) async {
     final normalizedRoomId = roomId.trim();
     if (normalizedRoomId.isEmpty) {
@@ -1050,6 +1366,7 @@ class ChatController extends ChangeNotifier {
       _mutedRoomIds = Set<String>.from(_mutedRoomIds)..remove(normalizedRoomId);
       _pinnedRoomIds = Set<String>.from(_pinnedRoomIds)
         ..remove(normalizedRoomId);
+      _clearPendingPushUnread(normalizedRoomId);
       _forcedUnreadRoomIds = Set<String>.from(_forcedUnreadRoomIds)
         ..remove(normalizedRoomId);
       await _threadPreferencesStore.removeRoom(normalizedRoomId);
@@ -1237,6 +1554,14 @@ class ChatController extends ChangeNotifier {
       eventId: eventId,
       emoji: emoji,
     );
+  }
+
+  /// Removes the user's own reaction by redacting its event. [reactionEventId]
+  /// is the event ID of the `m.reaction` event to redact.
+  Future<void> removeReaction(String reactionEventId) async {
+    final roomId = _activeRoomId;
+    if (roomId == null) return;
+    await _matrixService.redactEvent(roomId: roomId, eventId: reactionEventId);
   }
 
   Future<void> voteOnPoll(
@@ -1518,7 +1843,15 @@ class ChatController extends ChangeNotifier {
 
     _replyToMessage = null;
 
-    await openRoom(roomId, roomTitle: _activeRoomTitle);
+    try {
+      await openRoom(roomId, roomTitle: _activeRoomTitle);
+    } catch (e) {
+      // Images were successfully sent; room refresh is best-effort.
+      if (!_isTransientNetworkError(e)) {
+        _errorNotifier.setError(e.toString());
+      }
+      notifyListeners();
+    }
     return true;
   }
 
@@ -1575,6 +1908,7 @@ class ChatController extends ChangeNotifier {
   }) async {
     final roomId = _activeRoomId;
     if (roomId == null) {
+      _errorNotifier.setError('No active chat room — please re-open the chat.');
       return false;
     }
     if (!_validateUploadSize(bytes.lengthInBytes, filename)) {
@@ -1582,9 +1916,12 @@ class ChatController extends ChangeNotifier {
     }
 
     try {
+      final uploadBytes = kind == MessageKind.image
+          ? await _compressImageIfNeeded(bytes, filename)
+          : bytes;
       await _matrixService.sendMediaMessage(
         roomId: roomId,
-        bytes: bytes,
+        bytes: uploadBytes,
         filename: filename,
         mimeType: _mimeTypeFromFileName(filename, kind),
         kind: kind,
@@ -1594,10 +1931,46 @@ class ChatController extends ChangeNotifier {
         await openRoom(roomId, roomTitle: _activeRoomTitle);
       }
       return true;
-    } catch (e) {
+    } catch (e, s) {
+      debugPrint('[ChatController] sendMedia failed: $e\n$s');
       _errorNotifier.setError(e.toString());
       return false;
     }
+  }
+
+  /// Compresses an image to ensure it fits within [maxBytes].
+  /// Decodes the image, scales it down if wider/taller than [maxDimension],
+  /// then re-encodes as JPEG reducing quality until small enough.
+  /// Returns the original bytes unchanged if not an image or already small.
+  Future<Uint8List> _compressImageIfNeeded(
+    Uint8List bytes,
+    String filename, {
+    int maxBytes = 4 * 1024 * 1024, // 4 MB
+    int maxDimension = 1920,
+  }) async {
+    if (bytes.lengthInBytes <= maxBytes) {
+      return bytes;
+    }
+    final lower = filename.toLowerCase();
+    final isImage =
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.png') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.gif') ||
+        lower.endsWith('.bmp');
+    if (!isImage) {
+      return bytes;
+    }
+
+    return compute(
+      _compressImageBytesIsolate,
+      _CompressArgs(
+        bytes: bytes,
+        maxBytes: maxBytes,
+        maxDimension: maxDimension,
+      ),
+    );
   }
 
   String _mimeTypeFromFileName(String filename, [MessageKind? kind]) {
@@ -1639,7 +2012,13 @@ class ChatController extends ChangeNotifier {
   Future<void> _refreshFromSync() async {
     try {
       _threads = await _matrixService.getJoinedThreads();
+      _reconcilePendingPushUnreadCounts();
+      final activeRoomId = _activeRoomId;
+      if (activeRoomId != null && activeRoomId.trim().isNotEmpty) {
+        _clearActiveRoomUnreadState(activeRoomId);
+      }
       _verificationSessions = _matrixService.getVerificationSessions();
+      _clearTransientNetworkErrorBanner();
     } catch (e) {
       if (!_isTransientNetworkError(e)) {
         _errorNotifier.setError(e.toString());
@@ -1654,7 +2033,10 @@ class ChatController extends ChangeNotifier {
           await _matrixService.getRoomMessages(roomId),
         );
       } catch (e) {
-        if (!_isTransientNetworkError(e)) {
+        // Membership errors (M_FORBIDDEN) are silently ignored here: the user
+        // may still be transitioning from an invite to a joined state, and the
+        // periodic sync should not spam the error banner for this.
+        if (!_isTransientNetworkError(e) && !_isMembershipError(e)) {
           _errorNotifier.setError(e.toString());
         }
       }
@@ -1692,10 +2074,20 @@ class ChatController extends ChangeNotifier {
     }
 
     _updateMatrixSyncProgress(0.44, 'Signing into chat server...');
-    await _matrixService.loginWithPassword(
+    final matrixCreds = await _matrixService.loginWithPassword(
       username: username,
       password: password,
     );
+    // Persist credentials so the main isolate can show notifications when
+    // the app is backgrounded (background-isolate MethodChannels are unreliable
+    // when the main isolate is alive).
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('homeserver_url', _matrixService.homeserver);
+        await prefs.setString('access_token', matrixCreds.accessToken);
+      } catch (_) {}
+    }());
     _updateMatrixSyncProgress(0.72, 'Loading conversations...');
     await _syncSubscription?.cancel();
     _syncSubscription = _matrixService.syncUpdates.listen((_) async {
@@ -1794,8 +2186,30 @@ class ChatController extends ChangeNotifier {
   bool _isTransientNetworkError(Object error) {
     final text = error.toString().toLowerCase();
     return text.contains('failed host lookup') ||
+        text.contains('connection closed before full header was received') ||
+        text.contains('connection closed before full header') ||
+        text.contains('clientexception: connection closed') ||
         text.contains('socketexception') ||
         text.contains('clientexception with socketexception');
+  }
+
+  /// Returns true for Matrix membership errors (M_FORBIDDEN, M_UNKNOWN_TOKEN)
+  /// that indicate the current user is not (yet) a member of the room.
+  /// These are timing-related during invite→join transitions and should not
+  /// be surfaced to the user or retried indefinitely.
+  bool _isMembershipError(Object error) {
+    final text = error.toString();
+    return text.contains('M_FORBIDDEN') || text.contains('M_UNKNOWN_TOKEN');
+  }
+
+  void _clearTransientNetworkErrorBanner() {
+    final errorMessage = _errorNotifier.errorMessage;
+    if (errorMessage == null || errorMessage.trim().isEmpty) {
+      return;
+    }
+    if (_isTransientNetworkError(errorMessage)) {
+      _errorNotifier.clear();
+    }
   }
 
   @override
@@ -1819,4 +2233,46 @@ class PickedImageMedia {
 
   final Uint8List bytes;
   final String filename;
+}
+
+// ---------------------------------------------------------------------------
+// Image compression helpers (run in an isolate via compute())
+// ---------------------------------------------------------------------------
+
+class _CompressArgs {
+  const _CompressArgs({
+    required this.bytes,
+    required this.maxBytes,
+    required this.maxDimension,
+  });
+  final Uint8List bytes;
+  final int maxBytes;
+  final int maxDimension;
+}
+
+Uint8List _compressImageBytesIsolate(_CompressArgs args) {
+  final decoded = img.decodeImage(args.bytes);
+  if (decoded == null) {
+    return args.bytes;
+  }
+
+  // Scale down if either dimension exceeds maxDimension.
+  img.Image resized = decoded;
+  if (decoded.width > args.maxDimension || decoded.height > args.maxDimension) {
+    resized = img.copyResize(
+      decoded,
+      width: decoded.width > decoded.height ? args.maxDimension : -1,
+      height: decoded.height >= decoded.width ? args.maxDimension : -1,
+    );
+  }
+
+  // Try progressively lower quality until we fit.
+  for (final quality in [82, 70, 55, 40]) {
+    final encoded = img.encodeJpg(resized, quality: quality);
+    if (encoded.length <= args.maxBytes) {
+      return Uint8List.fromList(encoded);
+    }
+  }
+  // Last resort: encode at minimum quality.
+  return Uint8List.fromList(img.encodeJpg(resized, quality: 25));
 }
