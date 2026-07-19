@@ -287,15 +287,12 @@ class ChatController extends ChangeNotifier {
       }
     }
 
-    var baseUnreadCount = 0;
-    for (final thread in _threads) {
-      if (thread.id == normalizedRoomId) {
-        baseUnreadCount = _resolveUnreadCount(thread);
-        break;
-      }
-    }
-
-    final nextUnreadCount = baseUnreadCount > 0 ? baseUnreadCount + 1 : 1;
+    // Only count pushes that haven't been confirmed by a sync yet.
+    // _resolveUnreadCount already returns max(synapse_count, pending_count),
+    // so stacking on top of the Synapse count would double-count the message
+    // (e.g. Synapse says 1, push adds 1 → shows 2 for a single message).
+    final existingPending = _pendingPushUnreadCounts[normalizedRoomId] ?? 0;
+    final nextUnreadCount = existingPending + 1;
     _pendingPushUnreadCounts[normalizedRoomId] = nextUnreadCount;
   }
 
@@ -2011,7 +2008,14 @@ class ChatController extends ChangeNotifier {
 
   Future<void> _refreshFromSync() async {
     try {
-      _threads = await _matrixService.getJoinedThreads();
+      // Use the service's in-memory cache which is already kept current by
+      // _applyThreadSyncDelta in the long-poll loop. Calling getJoinedThreads()
+      // here would fire an extra /sync?timeout=0, which can return rooms with
+      // unread_notifications absent or zero and silently wipe badge counts.
+      final cached = _matrixService.cachedThreads;
+      _threads = cached.isNotEmpty
+          ? cached
+          : await _matrixService.getJoinedThreads();
       _reconcilePendingPushUnreadCounts();
       final activeRoomId = _activeRoomId;
       if (activeRoomId != null && activeRoomId.trim().isNotEmpty) {
@@ -2028,9 +2032,12 @@ class ChatController extends ChangeNotifier {
     final roomId = _activeRoomId;
     if (roomId != null) {
       try {
+        // Always bypass the cache for the active room so new messages that
+        // arrived in this sync cycle are shown immediately rather than waiting
+        // for the 8-second background-refresh cooldown to expire.
         _messages = _applyDeleteForMeFilter(
           roomId,
-          await _matrixService.getRoomMessages(roomId),
+          await _matrixService.getRoomMessages(roomId, allowCache: false),
         );
       } catch (e) {
         // Membership errors (M_FORBIDDEN) are silently ignored here: the user

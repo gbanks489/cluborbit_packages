@@ -210,6 +210,10 @@ class MatrixRestService {
   static const bool _verbosePerfLogging = false;
   final MatrixRestCacheStore _cacheStore = MatrixRestCacheStore();
   List<ChatThread> _cachedThreads = const <ChatThread>[];
+  // Tracks the most recent unread_notifications count received from Synapse for
+  // each room via the sync loop. Only updated when Synapse explicitly sends the
+  // field — never reset to 0 speculatively. Used to override stale cached counts.
+  final Map<String, int> _syncedUnreadByRoom = <String, int>{};
   final Map<String, List<ChatMessage>> _cachedMessagesByRoom =
       <String, List<ChatMessage>>{};
   final Set<String> _roomMessageRefreshInFlight = <String>{};
@@ -242,6 +246,27 @@ class MatrixRestService {
   }
 
   Stream<void> get syncUpdates => _syncUpdates.stream;
+
+  /// Returns the in-memory thread cache as updated by the sync loop.
+  /// Use this instead of [getJoinedThreads] when you only need the latest
+  /// known state without triggering an extra /sync round-trip.
+  /// Unread counts are overlaid from the live sync-received values so that
+  /// counts Synapse explicitly sent are never lost to a stale cache read.
+  List<ChatThread> get cachedThreads {
+    if (_syncedUnreadByRoom.isEmpty) {
+      return List<ChatThread>.from(_cachedThreads);
+    }
+    return _cachedThreads
+        .map((t) {
+          final synced = _syncedUnreadByRoom[t.id];
+          if (synced != null && synced != t.unreadCount) {
+            return t.copyWith(unreadCount: synced);
+          }
+          return t;
+        })
+        .toList(growable: false);
+  }
+
   Stream<ChatCallSnapshot> get callUpdates => _callUpdates.stream;
   Stream<void> get callMediaUpdates => _callMediaUpdates.stream;
   ChatCallSnapshot get callSnapshot => _callSnapshot;
@@ -324,6 +349,7 @@ class MatrixRestService {
     await _endCallSession(clearSnapshot: true);
     await _core.logout();
     _cachedThreads = const <ChatThread>[];
+    _syncedUnreadByRoom.clear();
     _cachedMessagesByRoom.clear();
     _typingUsersByRoom.clear();
     _readReceiptsByRoomEvent.clear();
@@ -340,7 +366,10 @@ class MatrixRestService {
     if (_cachedThreads.isNotEmpty && !_didServeCachedThreads) {
       _didServeCachedThreads = true;
       unawaited(_refreshSync(fullState: false));
-      _scheduleThreadIntegrityRepair(_cachedThreads, forceAll: true);
+      // Only repair threads that are actually missing data (title/last-message).
+      // forceAll was causing /state + /messages fetches for every room on
+      // every app start, hammering the server.
+      _scheduleThreadIntegrityRepair(_cachedThreads, forceAll: false);
       onProgress?.call(0.98, 'Loading conversations...');
       _perfLog(
         'getJoinedThreads.cacheHit',
@@ -371,7 +400,7 @@ class MatrixRestService {
     // full-state round-trips on every thread refresh.
     if (joined.isEmpty && invited.isEmpty) {
       if (_cachedThreads.isNotEmpty) {
-        _scheduleThreadIntegrityRepair(_cachedThreads, forceAll: true);
+        _scheduleThreadIntegrityRepair(_cachedThreads, forceAll: false);
         onProgress?.call(0.98, 'Loading conversations...');
         _perfLog(
           'getJoinedThreads.reuseCachedNoDelta',
@@ -465,7 +494,14 @@ class MatrixRestService {
         _lastMessageSenderByRoom[roomId] = isMe ? 'me' : senderName;
         _lastMessageSenderIdByRoom[roomId] = lastEventSenderId;
       }
-      final unread = _notificationCount(roomData);
+      // Use _notificationCountOrNull so that if Synapse omits
+      // unread_notifications (e.g. the count didn't change in this sync
+      // cycle — common when the room appears only due to a typing event),
+      // the existing cached count is preserved instead of being reset to 0.
+      final unread =
+          _notificationCountOrNull(roomData) ??
+          existingThread?.unreadCount ??
+          0;
 
       final thread = _mergeThreadDisplayFallbacks(
         ChatThread(
@@ -1126,6 +1162,9 @@ class MatrixRestService {
     final eventId = (latest['event_id'] ?? '').toString();
     if (eventId.isEmpty) return;
     await _core.setReadMarker(roomId: roomId, eventId: eventId);
+    // Room is now read — clear the synced unread override so cachedThreads
+    // reflects 0 immediately rather than waiting for the next sync cycle.
+    _syncedUnreadByRoom.remove(roomId);
   }
 
   Future<String> sendTextMessage({
@@ -2678,7 +2717,11 @@ class MatrixRestService {
       final hasTimelineDelta = timelineEvents > 0;
       _captureTyping(sync);
       _captureCallSignaling(sync);
-      if (fullState || hasRoomDelta || hasTimelineDelta) {
+      // Update the cache for any sync that has room data (joined/invited),
+      // even when there are zero timeline events. Synapse sends unread_notifications
+      // count changes (read receipts, push rule updates) inside joined rooms with
+      // no timeline events — we still need to apply those to update badge counts.
+      if (fullState || hasRoomDelta) {
         _applyThreadSyncDelta(joined: joined, invited: invited);
       }
       if (fullState || hasRoomDelta || hasTimelineDelta) {
@@ -3114,19 +3157,21 @@ class MatrixRestService {
 
           final existing = mutable[index];
           final repaired = await _repairThreadIntegrityFromServer(existing);
-          if (!_sameThreadDisplay(existing, repaired)) {
+          final threadChanged = !_sameThreadDisplay(existing, repaired);
+          if (threadChanged) {
             mutable[index] = repaired;
             changed = true;
-          }
-
-          final cachedMessages = _cachedMessagesByRoom[roomId];
-          if (cachedMessages != null && cachedMessages.isNotEmpty) {
-            await getRoomMessages(
-              roomId,
-              limit: max(60, min(cachedMessages.length, 120)),
-              allowCache: false,
-            );
-            repairedMessages = true;
+            // Only refresh cached messages when the thread metadata itself
+            // changed — avoids re-fetching messages for every room on startup.
+            final cachedMessages = _cachedMessagesByRoom[roomId];
+            if (cachedMessages != null && cachedMessages.isNotEmpty) {
+              await getRoomMessages(
+                roomId,
+                limit: max(60, min(cachedMessages.length, 120)),
+                allowCache: false,
+              );
+              repairedMessages = true;
+            }
           }
         } catch (_) {
           // Integrity repair is best-effort.
@@ -3598,6 +3643,14 @@ class MatrixRestService {
       }
       final timelineEnvelope = _asMap(roomData['timeline']);
       final timelineEvents = _asList(timelineEnvelope['events']);
+
+      // Capture unread count whenever Synapse explicitly sends it in this
+      // sync response. Store separately so it survives stale cache reads.
+      final syncedCount = _notificationCountOrNull(roomData);
+      if (syncedCount != null) {
+        _syncedUnreadByRoom[roomId] = syncedCount;
+      }
+
       // existing may be null if the room was an invite that just got accepted
       // (invite entries are separate) or is brand new. Build a minimal
       // placeholder so it gets added to the cache.
