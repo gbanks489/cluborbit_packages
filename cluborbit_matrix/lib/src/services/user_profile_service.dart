@@ -196,11 +196,6 @@ class UserProfileService {
     }
 
     final value = raw.trim();
-    final uri = Uri.tryParse(value);
-    if (uri != null && uri.hasScheme) {
-      return value;
-    }
-
     final host = ClubEnvironment.serverHost(
       read: dotenv.maybeGet,
       fallback: _config.serverHost,
@@ -213,12 +208,25 @@ class UserProfileService {
       read: dotenv.maybeGet,
       fallback: _config.useHttps,
     );
+    final baseUri = Uri.parse('${isHttps ? 'https' : 'http'}://$host');
+    final uri = Uri.tryParse(value);
+
+    if (uri != null && uri.hasScheme) {
+      final isLoopbackHost =
+          uri.host == 'localhost' ||
+          uri.host == '127.0.0.1' ||
+          uri.host == '::1';
+      if (!isLoopbackHost) {
+        return value;
+      }
+
+      return baseUri
+          .replace(path: uri.path, query: uri.hasQuery ? uri.query : null)
+          .toString();
+    }
+
     final path = value.startsWith('/') ? value : '/$value';
-    return Uri(
-      scheme: isHttps ? 'https' : 'http',
-      host: host,
-      path: path,
-    ).toString();
+    return baseUri.replace(path: path).toString();
   }
 
   Future<UserDTO> getUserDTO(String userUid) {

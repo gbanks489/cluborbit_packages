@@ -4,6 +4,7 @@ import 'package:image/image.dart' as img;
 import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuthException;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:image_picker/image_picker.dart';
@@ -51,6 +52,8 @@ class IncomingCallUxSettings {
 
 class ChatController extends ChangeNotifier {
   static const int _maxUploadBytes = 10 * 1024 * 1024;
+  static const Duration _roomLookupRetryDelay = Duration(seconds: 10);
+  bool _deferredNotifyScheduled = false;
 
   ChatController({
     required AuthService authService,
@@ -861,15 +864,119 @@ class ChatController extends ChangeNotifier {
   }
 
   void openRoomInBackground(String roomId, {String? roomTitle}) {
-    unawaited(
-      openRoom(roomId, roomTitle: roomTitle).catchError((Object error) {
-        // Membership timing errors (M_FORBIDDEN) during invite→join transitions
-        // are expected and should not be shown to the user.
-        if (!_isMembershipError(error)) {
-          _errorNotifier.setError(error.toString());
-        }
-      }),
+    unawaited(_openRoomWithRetryAndResync(roomId, roomTitle: roomTitle));
+  }
+
+  Future<void> _openRoomWithRetryAndResync(
+    String roomId, {
+    String? roomTitle,
+  }) async {
+    try {
+      await openRoom(roomId, roomTitle: roomTitle);
+      await _resyncRoomIfIncomplete(roomId);
+      return;
+    } catch (error) {
+      // Membership timing errors (M_FORBIDDEN) during invite→join transitions
+      // are expected and should not be shown to the user.
+      if (_isMembershipError(error)) {
+        return;
+      }
+
+      final shouldRetry =
+          _isTransientNetworkError(error) || _isLikelyTimeoutError(error);
+      if (!shouldRetry) {
+        _errorNotifier.setError(error.toString());
+        return;
+      }
+    }
+
+    await Future<void>.delayed(_roomLookupRetryDelay);
+
+    try {
+      // Force a lightweight re-sync before retrying the room lookup.
+      await loadThreads();
+    } catch (_) {
+      // Best-effort pre-retry sync.
+    }
+
+    try {
+      await openRoom(roomId, roomTitle: roomTitle);
+      await _resyncRoomIfIncomplete(roomId);
+    } catch (retryError) {
+      if (!_isMembershipError(retryError)) {
+        _errorNotifier.setError(retryError.toString());
+      }
+    }
+  }
+
+  Future<void> _resyncRoomIfIncomplete(String roomId) async {
+    if (!_isRoomMetadataIncomplete(roomId)) {
+      return;
+    }
+
+    try {
+      await loadThreads();
+    } catch (_) {
+      // Best-effort re-sync.
+    }
+
+    if (!_isRoomMetadataIncomplete(roomId)) {
+      return;
+    }
+
+    try {
+      await runIntegrityCheck();
+    } catch (_) {
+      // Best-effort integrity repair.
+    }
+  }
+
+  bool _isRoomMetadataIncomplete(String roomId) {
+    final normalizedRoomId = roomId.trim();
+    if (normalizedRoomId.isEmpty) {
+      return false;
+    }
+
+    ChatThread? thread;
+    for (final candidate in _threads) {
+      if (candidate.id == normalizedRoomId) {
+        thread = candidate;
+        break;
+      }
+    }
+    if (thread == null) {
+      return true;
+    }
+
+    final title = thread.title.trim();
+    final titleMissing =
+        title.isEmpty ||
+        title == normalizedRoomId ||
+        _looksLikeMatrixIdentifier(title);
+
+    final counterpart = _matrixService.cachedDirectMessageCounterpart(
+      normalizedRoomId,
     );
+    final counterpartUserId = counterpart?.userId.trim() ?? '';
+    final titleIsCounterpartUserId =
+        counterpartUserId.isNotEmpty && title == counterpartUserId;
+
+    final avatarMissing =
+        (thread.avatarUrl == null || thread.avatarUrl!.trim().isEmpty) &&
+        ((counterpart?.avatarUrl ?? '').trim().isEmpty);
+
+    return titleMissing || titleIsCounterpartUserId || avatarMissing;
+  }
+
+  bool _looksLikeMatrixIdentifier(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    if (normalized.startsWith('!') || normalized.startsWith('@')) {
+      return true;
+    }
+    return normalized.contains(':');
   }
 
   void clearActiveRoom({String? roomId}) {
@@ -2200,6 +2307,14 @@ class ChatController extends ChangeNotifier {
         text.contains('clientexception with socketexception');
   }
 
+  bool _isLikelyTimeoutError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('timeout') ||
+        text.contains('timed out') ||
+        text.contains('deadline exceeded') ||
+        text.contains('408');
+  }
+
   /// Returns true for Matrix membership errors (M_FORBIDDEN, M_UNKNOWN_TOKEN)
   /// that indicate the current user is not (yet) a member of the room.
   /// These are timing-related during invite→join transitions and should not
@@ -2224,7 +2339,29 @@ class ChatController extends ChangeNotifier {
     if (_isDisposed) {
       return;
     }
-    super.notifyListeners();
+
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    final canNotifyNow =
+        phase == SchedulerPhase.idle ||
+        phase == SchedulerPhase.postFrameCallbacks;
+
+    if (canNotifyNow) {
+      super.notifyListeners();
+      return;
+    }
+
+    if (_deferredNotifyScheduled) {
+      return;
+    }
+
+    _deferredNotifyScheduled = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _deferredNotifyScheduled = false;
+      if (_isDisposed) {
+        return;
+      }
+      super.notifyListeners();
+    });
   }
 
   @override

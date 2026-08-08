@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -16,9 +17,14 @@ import '../widgets/playerui_search_bar.dart';
 enum _ThreadAction { mute, unmute, pin, unpin, leave, markUnread }
 
 class ChatListScreen extends StatefulWidget {
-  const ChatListScreen({super.key, this.bottomNavigationBar});
+  const ChatListScreen({
+    super.key,
+    this.bottomNavigationBar,
+    this.pendingShareFiles = const <Map<String, String?>>[],
+  });
 
   final Widget? bottomNavigationBar;
+  final List<Map<String, String?>> pendingShareFiles;
 
   @override
   State<ChatListScreen> createState() => _ChatListScreenState();
@@ -30,10 +36,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
   final Set<String> _presenceRequestsInFlight = <String>{};
   Timer? _presenceRefreshTimer;
   String _presenceRefreshKey = '';
+  late List<Map<String, String?>> _pendingShareFiles;
 
   @override
   void initState() {
     super.initState();
+    _pendingShareFiles = List<Map<String, String?>>.from(
+      widget.pendingShareFiles,
+    );
     _presenceRefreshTimer = Timer.periodic(const Duration(seconds: 45), (_) {
       if (!mounted) {
         return;
@@ -67,6 +77,144 @@ class _ChatListScreenState extends State<ChatListScreen> {
   void dispose() {
     _presenceRefreshTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatListScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.pendingShareFiles.isNotEmpty &&
+        !listEquals(widget.pendingShareFiles, oldWidget.pendingShareFiles)) {
+      _pendingShareFiles = List<Map<String, String?>>.from(
+        widget.pendingShareFiles,
+      );
+    }
+  }
+
+  bool _looksLikeImage(String filename) {
+    final lower = filename.toLowerCase();
+    return lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.png') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.gif') ||
+        lower.endsWith('.bmp') ||
+        lower.endsWith('.heic') ||
+        lower.endsWith('.heif');
+  }
+
+  String _filenameFromPath(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final leaf = normalized.split('/').last.trim();
+    if (leaf.isNotEmpty) return leaf;
+    return 'shared_file';
+  }
+
+  Future<bool> _sharePendingFilesToThread(
+    ChatController controller,
+    ChatThread thread,
+  ) async {
+    if (_pendingShareFiles.isEmpty) {
+      return false;
+    }
+
+    final pending = List<Map<String, String?>>.from(_pendingShareFiles);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return const AlertDialog(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+              SizedBox(width: 16),
+              Expanded(child: Text('Sharing to chat...')),
+            ],
+          ),
+        );
+      },
+    );
+
+    var sentCount = 0;
+    try {
+      await controller.openRoom(thread.id, roomTitle: thread.title);
+
+      for (final item in pending) {
+        final path = (item['path'] ?? '').trim();
+        if (path.isEmpty) {
+          continue;
+        }
+        final file = File(path);
+        if (!await file.exists()) {
+          continue;
+        }
+        final bytes = await file.readAsBytes();
+        if (bytes.isEmpty) {
+          continue;
+        }
+
+        final filename = _filenameFromPath(path);
+        final mimeType = (item['mimeType'] ?? '').toLowerCase();
+        final kind =
+            (mimeType.startsWith('image/') || _looksLikeImage(filename))
+            ? MessageKind.image
+            : MessageKind.text;
+
+        final sent = await controller.sendMedia(
+          bytes: bytes,
+          filename: filename,
+          kind: kind,
+          refreshAfterSend: false,
+        );
+        if (sent) {
+          sentCount++;
+        }
+      }
+
+      await controller.openRoom(thread.id, roomTitle: thread.title);
+    } finally {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    }
+
+    if (!mounted) {
+      return true;
+    }
+
+    if (sentCount == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not share media to this chat.'),
+          duration: Duration(seconds: 4),
+        ),
+      );
+      return true;
+    }
+
+    setState(() {
+      _pendingShareFiles.clear();
+    });
+
+    final attemptedCount = pending.length;
+    final message = sentCount == attemptedCount
+        ? 'Shared $sentCount item${sentCount == 1 ? '' : 's'}.'
+        : 'Shared $sentCount/$attemptedCount item(s).';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+    );
+
+    context.pushNamed(
+      PlayerChatRoutes.chat,
+      extra: PlayerChatChatRouteData(
+        title: thread.title,
+        avatarUrl: thread.avatarUrl,
+      ),
+    );
+    return true;
   }
 
   void _refreshVisibleDmPresence(ChatController controller) {
@@ -427,6 +575,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       color: PlayerUiSignalTheme.secondaryColor,
                       onSelected: (value) async {
                         if (value == 'profile') {
+                          final profileUid = controller.userProfile?.uid.trim();
+                          if (profileUid != null && profileUid.isNotEmpty) {
+                            try {
+                              context.push('/profile/$profileUid');
+                              return;
+                            } catch (_) {
+                              // Fall back to package-local profile when host app
+                              // does not provide a /profile/:uid route.
+                            }
+                          }
+
                           await Navigator.of(context).push<void>(
                             MaterialPageRoute<void>(
                               builder: (_) => const UserProfileViewScreen(),
@@ -587,6 +746,35 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       accentColor: PlayerUiSignalTheme.primaryDarkColor,
                     ),
                     const SizedBox(height: 16),
+                    if (_pendingShareFiles.isNotEmpty) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: PlayerUiSignalTheme.primaryDarkColor.withAlpha(
+                            34,
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: PlayerUiSignalTheme.primaryDarkColor
+                                .withAlpha(90),
+                          ),
+                        ),
+                        child: Text(
+                          'Select a chat to share ${_pendingShareFiles.length} item(s).',
+                          style: const TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: PlayerUiSignalTheme.primaryDarkColor,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
                     Expanded(
                       child: RefreshIndicator(
                         onRefresh: controller.loadThreads,
@@ -839,6 +1027,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
               ),
             );
           }
+        }
+
+        if (_pendingShareFiles.isNotEmpty) {
+          await _sharePendingFilesToThread(controller, thread);
+          return;
         }
 
         controller.openRoomInBackground(thread.id, roomTitle: thread.title);
