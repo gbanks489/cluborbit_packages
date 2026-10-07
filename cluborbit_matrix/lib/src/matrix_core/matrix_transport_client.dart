@@ -55,6 +55,7 @@ typedef MatrixTransportFactory =
 abstract class MatrixTransportClient {
   MatrixTransportCapabilities get capabilities;
   String? get currentUserId;
+  String? get currentAccessToken;
   bool get isLoggedIn;
   String? get sinceToken;
 
@@ -64,6 +65,7 @@ abstract class MatrixTransportClient {
     required String username,
     required String password,
     String initialDeviceDisplayName = 'PlayerChat REST Client',
+    String? deviceId,
   });
 
   Future<void> logout();
@@ -109,6 +111,7 @@ abstract class MatrixTransportClient {
     required List<int> bytes,
     required String filename,
     required String mimeType,
+    void Function(int sent, int total)? onSendProgress,
   });
 
   Future<String> sendMediaMessage({

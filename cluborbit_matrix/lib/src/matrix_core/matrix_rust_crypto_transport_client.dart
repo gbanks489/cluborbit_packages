@@ -47,6 +47,9 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
 
   @override
   String? get currentUserId => _currentUserId ?? _fallback.currentUserId;
+  @override
+  String? get currentAccessToken =>
+      _accessToken ?? _fallback.currentAccessToken;
 
   @override
   bool get isLoggedIn {
@@ -72,12 +75,14 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
     required String username,
     required String password,
     String initialDeviceDisplayName = 'PlayerChat REST Client',
+    String? deviceId,
   }) async {
     final nativeResponse = await _invokeMap('loginPassword', <String, dynamic>{
       ..._baseArgs,
       'username': username,
       'password': password,
       'initialDeviceDisplayName': initialDeviceDisplayName,
+      if ((deviceId ?? '').isNotEmpty) 'deviceId': deviceId,
     });
     if (nativeResponse != null) {
       final result = MatrixLowLevelLoginResult(
@@ -102,6 +107,7 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
       username: username,
       password: password,
       initialDeviceDisplayName: initialDeviceDisplayName,
+      deviceId: deviceId,
     );
     _currentUserId = result.userId;
     _accessToken = result.accessToken;
@@ -279,11 +285,13 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
     required List<int> bytes,
     required String filename,
     required String mimeType,
+    void Function(int sent, int total)? onSendProgress,
   }) {
     return _fallback.uploadMedia(
       bytes: bytes,
       filename: filename,
       mimeType: mimeType,
+      onSendProgress: onSendProgress,
     );
   }
 

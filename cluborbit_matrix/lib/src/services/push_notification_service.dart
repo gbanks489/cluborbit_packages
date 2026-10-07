@@ -15,6 +15,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'chat_secure_storage.dart';
 import 'matrix_rest_service.dart';
 
 class _MatrixNotificationAuth {
@@ -96,7 +97,27 @@ class PushNotificationService {
   static const MethodChannel _nativeNotificationChannel = MethodChannel(
     'playerconnect/notifications',
   );
-  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
+  static const FlutterSecureStorage _secureStorage = chatSecureStorage;
+
+  /// Set by the app: whether `roomId`'s chat is open on screen right now, in which case a push
+  /// for it needs no notification (the message is already appearing in front of the user).
+  static bool Function(String roomId)? isRoomOnScreen;
+
+  /// Pushes native Android draws itself in every app state (PostNotificationHelper) - new posts,
+  /// post comments, event detail updates, new events and registration changes. Flutter must not show its own copy.
+  static bool isNativelyDrawnPostPush(Map<String, dynamic> data) {
+    const types = {
+      'clubPost',
+      'eventDatePost',
+      'postComment',
+      'eventSeriesUpdate',
+      'eventDateUpdate',
+      'newEvent',
+      'eventRegistrationChange',
+    };
+    return types.contains((data['type'] ?? '').toString());
+  }
+
   static bool _localNotificationsInitialized = false;
   static File? _logFile;
 
@@ -312,11 +333,18 @@ class PushNotificationService {
     _foregroundMessageSubscription = FirebaseMessaging.onMessage.listen((
       message,
     ) {
+      final roomId = (message.data['room_id'] ?? '').toString().trim();
+      final onScreen =
+          roomId.isNotEmpty && (isRoomOnScreen?.call(roomId) ?? false);
+      // New-post pushes are drawn natively on Android in every app state (PostNotificationHelper).
+      final drawnNatively =
+          defaultTargetPlatform == TargetPlatform.android &&
+          isNativelyDrawnPostPush(message.data);
       unawaited(
         _handleIncomingMessage(
           message,
           source: 'foreground',
-          showLocalNotification: true,
+          showLocalNotification: !onScreen && !drawnNatively,
         ),
       );
     });
@@ -397,6 +425,9 @@ class PushNotificationService {
     bool navigateOnOpen = false,
   }) async {
     _logIncomingMessage(message, source: source);
+    if (showLocalNotification) {
+      message = await _enrichEventIdOnlyMessage(message);
+    }
     if (navigateOnOpen) {
       // The user tapped a notification to bring the app to the foreground.
       // Synthesise a response so the navigation handlers (registered via
@@ -428,6 +459,87 @@ class PushNotificationService {
     for (final handler in _messageHandlers.values) {
       await handler(message);
     }
+  }
+
+  /// Matrix event_id_only pushes carry just room_id/event_id, so the notification would otherwise
+  /// show raw IDs. Fills in room name, sender name and message text from the homeserver.
+  Future<RemoteMessage> _enrichEventIdOnlyMessage(RemoteMessage message) async {
+    if (!_isLikelyMatrixNotification(message) ||
+        _isCustomAppNotification(message)) {
+      return message;
+    }
+    final data = Map<String, dynamic>.from(message.data);
+    final roomId = (data['room_id'] ?? '').toString().trim();
+    final eventId = (data['event_id'] ?? '').toString().trim();
+    if (roomId.isEmpty ||
+        eventId.isEmpty ||
+        _membershipFromMessage(message) != null) {
+      return message;
+    }
+
+    var changed = false;
+    if ((data['room_name'] ?? '').toString().trim().isEmpty) {
+      var roomName = _matrixService.cachedRoomTitle(roomId);
+      if (roomName == null) {
+        final auth = await _loadMatrixNotificationAuth();
+        if (auth != null) {
+          final json = await _matrixGetJson(
+            auth,
+            '/_matrix/client/v3/rooms/${Uri.encodeComponent(roomId)}/state/m.room.name',
+          );
+          final name = (json?['name'] ?? '').toString().trim();
+          roomName = name.isEmpty ? null : name;
+        }
+      }
+      if (roomName != null) {
+        data['room_name'] = roomName;
+        changed = true;
+      }
+    }
+
+    final existingBody = (data['body'] ?? '').toString().trim();
+    if (existingBody.isEmpty || existingBody == 'New event') {
+      final body = await _matrixService.resolveNotificationBody(
+        roomId,
+        eventId,
+      );
+      if (body != null && body.isNotEmpty) {
+        data['body'] = body;
+        changed = true;
+      }
+    }
+
+    final senderId = (data['sender'] ?? '').toString().trim();
+    if ((data['sender_display_name'] ?? '').toString().trim().isEmpty &&
+        senderId.isNotEmpty) {
+      final name = _matrixService.cachedParticipantDisplayName(
+        roomId,
+        senderId,
+      );
+      if (name != null) {
+        data['sender_display_name'] = name;
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return message;
+    }
+    return RemoteMessage(
+      senderId: message.senderId,
+      category: message.category,
+      collapseKey: message.collapseKey,
+      contentAvailable: message.contentAvailable,
+      data: data,
+      from: message.from,
+      messageId: message.messageId,
+      messageType: message.messageType,
+      mutableContent: message.mutableContent,
+      notification: message.notification,
+      sentTime: message.sentTime,
+      threadId: message.threadId,
+      ttl: message.ttl,
+    );
   }
 
   Future<bool> _showNativeAndroidMatrixNotification(
@@ -989,6 +1101,10 @@ class PushNotificationService {
     final dataBody = (message.data['body'] ?? '').toString().trim();
     if (dataBody.isNotEmpty) {
       return dataBody;
+    }
+
+    if (_isLikelyMatrixNotification(message)) {
+      return 'Sent you a message';
     }
 
     final payloadSummary = _notificationPayloadSummary(message);

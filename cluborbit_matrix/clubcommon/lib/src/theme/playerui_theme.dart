@@ -4,9 +4,10 @@ import 'package:google_fonts/google_fonts.dart';
 class PlayerUiSignalTheme {
   static const Color primaryDarkColor = Color.fromRGBO(249, 204, 11, 1);
   static const Color primaryColor = Color.fromRGBO(0, 149, 246, 1);
-  static const Color secondaryColor = Color.fromRGBO(12, 29, 54, 1);
+  // #0B1224 — matches playerui colors.dart and cluborbit-web's page background.
+  static const Color secondaryColor = Color.fromRGBO(11, 18, 36, 1);
   static const Color mobileSearchColor = Color.fromRGBO(38, 38, 38, 1);
-  static const Color mobileBackgroundColor = Color.fromRGBO(12, 29, 54, 1);
+  static const Color mobileBackgroundColor = Color.fromRGBO(11, 18, 36, 1);
 
   static ThemeData darkTheme() {
     final base = ThemeData(

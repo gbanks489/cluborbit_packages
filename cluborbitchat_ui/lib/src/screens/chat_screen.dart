@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -7,6 +7,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
@@ -15,12 +16,14 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:cluborbit_matrix/cluborbit_matrix.dart';
 import 'package:cluborbit_models/cluborbit_models.dart';
 import 'package:provider/provider.dart';
 import 'package:record/record.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:video_player/video_player.dart';
 
 import 'chat_details_screen.dart';
 
@@ -37,6 +40,8 @@ enum _AttachmentAction { pictures, documents, location, contact, poll }
 enum _DeleteMessageAction { forMe, forEveryone }
 
 enum _PictureSourceAction { gallery, cloud }
+
+enum _CameraCaptureAction { photo, video }
 
 enum _StructuredMessageType { location, contact, poll }
 
@@ -219,6 +224,12 @@ class _ChatScreenState extends State<ChatScreen> {
   final FocusNode _composerFocusNode = FocusNode();
   final ScrollController _messagesScrollController = ScrollController();
   final AudioPlayer _audioPlayer = AudioPlayer();
+  // Path of the temp file currently backing _audioPlayer's source, when playing a decrypted
+  // (encrypted-attachment) voice message — just_audio needs an actual file/URL, not in-memory
+  // bytes, so a decrypted voice message is written to a temp file just_audio can point at.
+  // Deleted as soon as a different source is loaded or the screen disposes, so decrypted audio
+  // never lingers on disk longer than it's actually playing.
+  String? _decryptedAudioTempPath;
 
   Timer? _typingStopTimer;
   Timer? _presenceRefreshTimer;
@@ -228,6 +239,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _typingActive = false;
   bool _showEmojiPickerPanel = false;
   bool _showScrollToLatestFab = false;
+  String? _lastSeenLatestMessageId;
   bool _audioLoading = false;
   String? _playingAudioMessageId;
   Duration _audioPosition = Duration.zero;
@@ -242,6 +254,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final Set<String> _linkPreviewUnavailableUrls = <String>{};
   final Set<String> _presenceRequestsInFlight = <String>{};
   ChatController? _controllerRef;
+  String? _onScreenRoomId;
   ErrorNotifier? _errorNotifierRef;
   late _ChatAppearance _appearance;
   String? _appearancePreferenceKey;
@@ -804,6 +817,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    final onScreenRoomId = _onScreenRoomId;
+    if (onScreenRoomId != null)
+      _controllerRef?.clearRoomOnScreen(onScreenRoomId);
     _errorNotifierRef?.removeListener(_onErrorNotifierChanged);
     _presenceRefreshTimer?.cancel();
     _typingStopTimer?.cancel();
@@ -812,6 +828,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _audioPositionSub?.cancel();
     _audioDurationSub?.cancel();
     unawaited(_audioPlayer.dispose());
+    _deleteDecryptedAudioTempFile();
     _messagesScrollController.removeListener(_handleMessageListScroll);
     _messagesScrollController.dispose();
     _composerFocusNode.removeListener(_handleComposerFocusChange);
@@ -841,6 +858,33 @@ class _ChatScreenState extends State<ChatScreen> {
       duration: const Duration(milliseconds: 260),
       curve: Curves.easeOutCubic,
     );
+  }
+
+  void _scrollToLatestOnNewMessage(String latestId, bool isOwn) {
+    final previous = _lastSeenLatestMessageId;
+    _lastSeenLatestMessageId = latestId;
+    if (previous == null || previous == latestId) {
+      return;
+    }
+    final nearBottom =
+        !_messagesScrollController.hasClients ||
+        _messagesScrollController.offset <= 200;
+    if (!isOwn && !nearBottom) {
+      return;
+    }
+    void snapToLatest() {
+      if (!mounted || !_messagesScrollController.hasClients) {
+        return;
+      }
+      _messagesScrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => snapToLatest());
+    Future<void>.delayed(const Duration(milliseconds: 350), snapToLatest);
   }
 
   void _handleComposerFocusChange() {
@@ -961,10 +1005,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _onErrorNotifierChanged() {
-    final error = _errorNotifierRef?.errorMessage?.trim();
-    if (error != null && error.isNotEmpty) {
-      debugPrint('[ChatScreen] Send error: $error');
+    final raw = _errorNotifierRef?.errorMessage?.trim();
+    if (raw != null && raw.isNotEmpty) {
+      debugPrint('[ChatScreen] Send error: $raw');
     }
+    final error = _errorNotifierRef?.visibleErrorMessage?.trim();
     if (error != null && error.isNotEmpty && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1064,91 +1109,54 @@ class _ChatScreenState extends State<ChatScreen> {
         );
         continue;
       }
-      if (message.metadata['isForwarded'] == true) {
-        continue;
-      }
-      if (message.isEdited) {
-        events.add(
-          _TimelineEventItem(
-            icon: Icons.edit_outlined,
-            label: 'Message edited',
-            time: message.createdAt,
-          ),
-        );
-      }
-      if (message.kind == MessageKind.video) {
-        events.add(
-          _TimelineEventItem(
-            icon: Icons.videocam_outlined,
-            label: 'Video shared',
-            time: message.createdAt,
-          ),
-        );
-      }
-      if (message.kind == MessageKind.emoji) {
-        // Reaction events are shown as bubble overlays — skip in timeline.
-        continue;
-      }
+      // Edits and shared videos are part of the message itself (edited label / video bubble),
+      // not separate timeline events — the web doesn't list them either.
     }
     events.sort((a, b) => a.time.compareTo(b.time));
     return events;
   }
 
-  static const Duration _timelineEventClusterWindow = Duration(minutes: 5);
-
-  List<_TimelineEventCluster> _clusterTimelineEvents(
-    List<_TimelineEventItem> events,
-  ) {
-    if (events.isEmpty) {
-      return const <_TimelineEventCluster>[];
-    }
-
-    final clusters = <_TimelineEventCluster>[];
-    var currentItems = <_TimelineEventItem>[events.first];
-
-    for (final event in events.skip(1)) {
-      final previous = currentItems.last;
-      if (event.time.difference(previous.time) <= _timelineEventClusterWindow) {
-        currentItems.add(event);
-        continue;
-      }
-      clusters.add(_TimelineEventCluster(items: currentItems));
-      currentItems = <_TimelineEventItem>[event];
-    }
-
-    clusters.add(_TimelineEventCluster(items: currentItems));
-    return clusters;
-  }
-
+  /// Messages and room events merged into one chronological timeline, like cluborbit-web:
+  /// every event sits exactly where it happened between messages. Events that follow each
+  /// other with no message in between share one collapsible card; a card never spans a
+  /// message (grouping by a time window used to move events past the messages sent meanwhile).
   List<_ChatTimelineEntry> _buildTimelineEntries({
     required List<ChatMessage> visibleMessages,
-    required List<_TimelineEventCluster> eventClusters,
+    required List<_TimelineEventItem> events,
   }) {
     final entries = <_ChatTimelineEntry>[];
-    var clusterIndex = 0;
+    var pendingEvents = <_TimelineEventItem>[];
+    void flushEvents() {
+      if (pendingEvents.isEmpty) return;
+      entries.add(
+        _ChatTimelineEntry.eventCluster(
+          _TimelineEventCluster(items: pendingEvents),
+        ),
+      );
+      pendingEvents = <_TimelineEventItem>[];
+    }
 
+    var eventIndex = 0;
     for (
       var messageIndex = 0;
       messageIndex < visibleMessages.length;
       messageIndex++
     ) {
       final message = visibleMessages[messageIndex];
-      while (clusterIndex < eventClusters.length &&
-          !eventClusters[clusterIndex].latestEvent.time.isAfter(
-            message.createdAt,
-          )) {
-        entries.add(
-          _ChatTimelineEntry.eventCluster(eventClusters[clusterIndex]),
-        );
-        clusterIndex++;
+      while (eventIndex < events.length &&
+          !events[eventIndex].time.isAfter(message.createdAt)) {
+        pendingEvents.add(events[eventIndex]);
+        eventIndex++;
       }
+      flushEvents();
       entries.add(_ChatTimelineEntry.message(message, messageIndex));
     }
 
-    while (clusterIndex < eventClusters.length) {
-      entries.add(_ChatTimelineEntry.eventCluster(eventClusters[clusterIndex]));
-      clusterIndex++;
+    while (eventIndex < events.length) {
+      pendingEvents.add(events[eventIndex]);
+      eventIndex++;
     }
+    flushEvents();
 
     return entries;
   }
@@ -1213,6 +1221,96 @@ class _ChatScreenState extends State<ChatScreen> {
       return value.trim();
     }
     return _mediaUrlFor(message);
+  }
+
+  Map<String, dynamic>? _mediaEncryptionFor(ChatMessage message) {
+    final value = message.metadata['mediaEncryption'];
+    return value is Map ? value.cast<String, dynamic>() : null;
+  }
+
+  /// The *thumbnail's own* encryption info (a separate key/iv from the main attachment's — see
+  /// MatrixRestService.sendMediaMessage) — null when there's no real encrypted thumbnail, in
+  /// which case a caller reusing `_mediaEncryptionFor` for a URL that's actually the full
+  /// attachment itself (the `_thumbnailUrlFor` fallback) is still correct.
+  Map<String, dynamic>? _thumbnailEncryptionFor(ChatMessage message) {
+    final value = message.metadata['thumbnailEncryption'];
+    return value is Map ? value.cast<String, dynamic>() : null;
+  }
+
+  /// A file extension for a message's audio, from its mimetype (preferred) or its filename —
+  /// needed when writing a decrypted voice message to a temp file: just_audio's underlying
+  /// platform players (ExoPlayer on Android especially) pick a decoder based on the file
+  /// extension, so a generic/missing extension can fail to play even though the bytes are valid.
+  String _audioFileExtension(ChatMessage message) {
+    final mimeRaw = message.metadata['mimeType'];
+    final mime = mimeRaw is String ? mimeRaw.trim().toLowerCase() : '';
+    if (mime.contains('webm')) return 'webm';
+    if (mime.contains('ogg')) return 'ogg';
+    if (mime.contains('mp4') || mime.contains('m4a') || mime.contains('aac')) {
+      return 'm4a';
+    }
+    if (mime.contains('mpeg') || mime.contains('mp3')) return 'mp3';
+    if (mime.contains('wav')) return 'wav';
+
+    final filenameRaw = message.metadata['filename'];
+    final filename = filenameRaw is String
+        ? filenameRaw.trim().toLowerCase()
+        : '';
+    final dotIndex = filename.lastIndexOf('.');
+    if (dotIndex != -1 && dotIndex < filename.length - 1) {
+      final ext = filename.substring(dotIndex + 1);
+      if (RegExp(r'^[a-z0-9]{2,5}$').hasMatch(ext)) return ext;
+    }
+    return 'm4a';
+  }
+
+  /// `_mediaUrlFor` bundled with its encryption info (if any) — the shape `_EncryptedImage` and
+  /// every other media consumer below needs, since a bare URL alone isn't enough to display an
+  /// encrypted attachment.
+  // Pictographs plus the joiners/modifiers/flags/keycaps that combine them into one emoji (same
+  // rule as MatrixRestService's emoji kind).
+  static final RegExp _emojiPattern = RegExp(
+    // ignore: valid_regexps
+    r'\p{Extended_Pictographic}',
+    unicode: true,
+  );
+  static final RegExp _emojiOnlyPattern = RegExp(
+    // ignore: valid_regexps
+    r'^(?:\p{Extended_Pictographic}|\p{Emoji_Modifier}|[\u{1F1E6}-\u{1F1FF}]|[#*0-9]\u{FE0F}?\u{20E3}|\u{200D}|\u{FE0F}|\s)+$',
+    unicode: true,
+  );
+
+  /// A text message of just 1-3 emoji. Checked from the body rather than trusting `kind` alone,
+  /// since a message typed in the composer (and older cached ones) arrive as plain text.
+  bool _isEmojiOnlyMessage(ChatMessage message) {
+    if (message.kind == MessageKind.emoji) return true;
+    if (message.kind != MessageKind.text) return false;
+    final body = message.body.trim();
+    return body.isNotEmpty &&
+        _emojiOnlyPattern.hasMatch(body) &&
+        _emojiPattern.allMatches(body).length <= 3;
+  }
+
+  _MediaRef? _mediaRefFor(ChatMessage message) {
+    return _MediaRef.fromUrl(
+      _mediaUrlFor(message),
+      _mediaEncryptionFor(message),
+    );
+  }
+
+  /// Same as `_mediaRefFor`, but preferring the (unencrypted-only) server thumbnail when one
+  /// exists, else falling back to the full image — same encryption info either way, since this
+  /// app never generates a separate encrypted thumbnail.
+  _MediaRef? _thumbnailMediaRefFor(ChatMessage message) {
+    // A real thumbnailUrl (video's separately-encrypted preview) needs thumbnailEncryption; when
+    // there isn't one, _thumbnailUrlFor falls back to the main attachment's own URL (e.g. an
+    // image, which never gets a separate thumbnail), which needs mediaEncryption instead.
+    final value = message.metadata['thumbnailUrl'];
+    final hasRealThumbnail = value is String && value.trim().isNotEmpty;
+    final encryption = hasRealThumbnail
+        ? _thumbnailEncryptionFor(message)
+        : _mediaEncryptionFor(message);
+    return _MediaRef.fromUrl(_thumbnailUrlFor(message), encryption);
   }
 
   bool _isDocumentAttachment(ChatMessage message) {
@@ -1301,6 +1399,40 @@ class _ChatScreenState extends State<ChatScreen> {
     return '$minutes:$seconds';
   }
 
+  void _deleteDecryptedAudioTempFile() {
+    final path = _decryptedAudioTempPath;
+    _decryptedAudioTempPath = null;
+    if (path == null) return;
+    unawaited(File(path).delete().catchError((_) => File(path)));
+  }
+
+  /// Points `_audioPlayer` at a message's audio — streamed directly from the homeserver for a
+  /// legacy unencrypted message, or downloaded+decrypted to a short-lived temp file first for an
+  /// encrypted one (just_audio needs an actual file/URL to play from, not in-memory bytes).
+  Future<void> _setAudioSourceForMessage(
+    ChatMessage message,
+    String url,
+  ) async {
+    final encryption = _mediaEncryptionFor(message);
+    if (encryption == null) {
+      await _audioPlayer.setUrl(url);
+      return;
+    }
+    final controller = context.read<ChatController>();
+    final bytes = await controller.resolveMediaBytes(
+      url,
+      encryption: encryption,
+    );
+    final dir = await getTemporaryDirectory();
+    final extension = _audioFileExtension(message);
+    final path =
+        '${dir.path}/co_audio_${DateTime.now().microsecondsSinceEpoch}.$extension';
+    await File(path).writeAsBytes(bytes, flush: true);
+    _deleteDecryptedAudioTempFile();
+    _decryptedAudioTempPath = path;
+    await _audioPlayer.setFilePath(path);
+  }
+
   Future<void> _toggleAudioPlayback(ChatMessage message) async {
     final url = _mediaUrlFor(message);
     if (url == null || url.isEmpty) {
@@ -1327,7 +1459,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     try {
       await _audioPlayer.stop();
-      await _audioPlayer.setUrl(url);
+      await _setAudioSourceForMessage(message, url);
       if (!mounted) {
         return;
       }
@@ -1362,12 +1494,51 @@ class _ChatScreenState extends State<ChatScreen> {
     await _audioPlayer.seek(Duration(milliseconds: targetMs));
   }
 
+  /// The last path segment of `raw`, with anything but safe filename characters replaced — used
+  /// to name a decrypted document's temp file. Never trust a message's filename as a path
+  /// component directly (it's sender-controlled data): this strips any `/`/`..` it might contain
+  /// rather than letting it influence where the temp file actually gets written.
+  String _sanitizedTempFilename(String raw) {
+    final base = raw.split(RegExp(r'[\\/]')).last.trim();
+    final cleaned = base.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    return cleaned.isEmpty ? 'file' : cleaned;
+  }
+
   Future<void> _openDocumentExternally(ChatMessage message) async {
     final url = _mediaUrlFor(message);
     if (url == null) {
       return;
     }
-    final uri = Uri.tryParse(url);
+
+    final encryption = _mediaEncryptionFor(message);
+    Uri? uri;
+    if (encryption != null) {
+      // Encrypted document: decrypt to a temp file first — an external viewer app can't be handed
+      // a URL pointing at ciphertext, and needs an actual local file. Named after the real
+      // filename (sanitized) so the OS's file-type association (by extension) still works.
+      try {
+        final controller = context.read<ChatController>();
+        final bytes = await controller.resolveMediaBytes(
+          url,
+          encryption: encryption,
+        );
+        final dir = await getTemporaryDirectory();
+        final filename = _sanitizedTempFilename(_documentLabel(message));
+        final path =
+            '${dir.path}/co_doc_${DateTime.now().microsecondsSinceEpoch}_$filename';
+        await File(path).writeAsBytes(bytes, flush: true);
+        uri = Uri.file(path);
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not decrypt the document.')),
+          );
+        }
+        return;
+      }
+    } else {
+      uri = Uri.tryParse(url);
+    }
     if (uri == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1391,6 +1562,290 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
     }
+  }
+
+  bool _isPlayableVideo(ChatMessage message) {
+    if (_mediaUrlFor(message) == null) return false;
+    if (message.kind == MessageKind.video) return true;
+    final mime = message.metadata['mimeType'];
+    return mime is String && mime.trim().toLowerCase().startsWith('video/');
+  }
+
+  Widget _buildVideoMessageContent({
+    required BuildContext context,
+    required ChatMessage message,
+    required bool mine,
+    required bool showInsideTime,
+    required int effectiveReadCount,
+  }) {
+    final media = _mediaRefFor(message)!;
+    // Only a real server thumbnail can be drawn as an image; the fallback in _thumbnailUrlFor is
+    // the video file itself, which can't be decoded as a picture.
+    final thumbRaw = message.metadata['thumbnailUrl'];
+    final thumb =
+        thumbRaw is String &&
+            thumbRaw.trim().isNotEmpty &&
+            thumbRaw.trim() != media.url
+        ? _MediaRef.fromUrl(thumbRaw, _thumbnailEncryptionFor(message))
+        : null;
+    final caption = (message.metadata['caption'] as String?)?.trim() ?? '';
+    void open() {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              _VideoPlayerScreen(media: media, title: message.senderName),
+        ),
+      );
+    }
+
+    return SizedBox(
+      width: 240,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            onTap: open,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: SizedBox(
+                width: 240,
+                height: 160,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (thumb != null)
+                      _EncryptedImage(media: thumb, fit: BoxFit.cover)
+                    else
+                      Container(color: Colors.black87),
+                    Center(
+                      child: Container(
+                        width: 52,
+                        height: 52,
+                        decoration: const BoxDecoration(
+                          color: Colors.black54,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.play_arrow_rounded,
+                          color: Colors.white,
+                          size: 36,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (caption.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                caption,
+                style: TextStyle(
+                  color: _appearance.messageTextColor,
+                  fontSize: 14,
+                  fontFamily: _appearance.messageFontFamily,
+                ),
+              ),
+            ),
+          if (showInsideTime || mine)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (showInsideTime)
+                      Text(
+                        _bubbleTimeLabel(context, message.createdAt),
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: Colors.white70,
+                        ),
+                      ),
+                    if (mine)
+                      Padding(
+                        padding: EdgeInsets.only(left: showInsideTime ? 4 : 0),
+                        child: _SignalReceiptTicks(
+                          isSent: _messageHasServerAck(message),
+                          showReceivedCircle: _messageShowsReceivedCircle(
+                            message,
+                          ),
+                          isRead: effectiveReadCount > 0,
+                          isFailed: _messageIsFailed(message),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  LatLng? _locationOf(ChatMessage message) {
+    final raw = message.metadata['geoUri'];
+    if (raw is! String) return null;
+    final match = RegExp(
+      r'geo:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)',
+    ).firstMatch(raw);
+    if (match == null) return null;
+    final lat = double.tryParse(match.group(1)!);
+    final lng = double.tryParse(match.group(2)!);
+    if (lat == null || lng == null) return null;
+    return LatLng(lat, lng);
+  }
+
+  Widget _buildLocationMessageContent({
+    required ChatMessage message,
+    required bool mine,
+    required bool showInsideTime,
+    required int effectiveReadCount,
+  }) {
+    final point = _locationOf(message)!;
+    final descriptionRaw = message.metadata['locationDescription'];
+    final description = descriptionRaw is String ? descriptionRaw.trim() : '';
+    final mapsUri = Uri.parse(
+      'https://www.openstreetmap.org/?mlat=${point.latitude}&mlon=${point.longitude}&zoom=15',
+    );
+    Future<void> open() async {
+      // A geo: URI makes Android open the user's preferred maps app (or its chooser); fall back to
+      // the browser when nothing handles it or on other platforms.
+      final label = description.isNotEmpty
+          ? '(${Uri.encodeComponent(description)})'
+          : '';
+      final geoUri = Uri.parse(
+        'geo:${point.latitude},${point.longitude}?q=${point.latitude},${point.longitude}$label',
+      );
+      var launched = false;
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        try {
+          launched = await launchUrl(
+            geoUri,
+            mode: LaunchMode.externalApplication,
+          );
+        } catch (_) {}
+      }
+      if (!launched) {
+        await launchUrl(mapsUri, mode: LaunchMode.externalApplication);
+      }
+    }
+
+    return SizedBox(
+      width: 240,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: open,
+            borderRadius: BorderRadius.circular(12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(15),
+              child: SizedBox(
+                width: 240,
+                height: 140,
+                child: IgnorePointer(
+                  child: FlutterMap(
+                    options: MapOptions(
+                      initialCenter: point,
+                      initialZoom: 15,
+                      interactionOptions: const InteractionOptions(
+                        flags: InteractiveFlag.none,
+                      ),
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate:
+                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'com.example.playerchat',
+                      ),
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: point,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(
+                              Icons.location_on,
+                              color: Colors.redAccent,
+                              size: 36,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 7),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.location_on,
+                  size: 14,
+                  color: Colors.redAccent,
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    description.isNotEmpty ? description : 'Shared location',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(7, 2, 7, 3),
+            child: Row(
+              children: [
+                GestureDetector(
+                  onTap: open,
+                  child: const Text(
+                    'Open in Maps',
+                    style: TextStyle(
+                      color: Color(0xFF60A5FA),
+                      fontSize: 12,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                if (showInsideTime)
+                  Text(
+                    _bubbleTimeLabel(context, message.createdAt),
+                    style: const TextStyle(fontSize: 10, color: Colors.white70),
+                  ),
+                if (mine)
+                  Padding(
+                    padding: EdgeInsets.only(left: showInsideTime ? 4 : 0),
+                    child: _SignalReceiptTicks(
+                      isSent: _messageHasServerAck(message),
+                      showReceivedCircle: _messageShowsReceivedCircle(message),
+                      isRead: effectiveReadCount > 0,
+                      isFailed: _messageIsFailed(message),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildDocumentMessageContent({
@@ -1960,46 +2415,32 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  bool _isImageClusterPair(ChatMessage a, ChatMessage b) {
-    if (a.kind != MessageKind.image || b.kind != MessageKind.image) {
-      return false;
+  /// A gallery message (org.cluborbit.gallery) as one entry per image - the shape the image
+  /// collage bubble takes - or null for any other message.
+  List<ChatMessage>? _galleryMessagesFor(ChatMessage message) {
+    final raw = message.metadata['galleryImages'];
+    if (raw is! List || raw.isEmpty) return null;
+    final images = <ChatMessage>[];
+    for (var i = 0; i < raw.length; i++) {
+      final img = raw[i];
+      if (img is! Map) continue;
+      images.add(
+        message.copyWith(
+          id: i == 0 ? message.id : '${message.id}#$i',
+          metadata: <String, dynamic>{
+            ...message.metadata,
+            'mediaUrl': img['mediaUrl'],
+            'mediaEncryption': img['mediaEncryption'],
+            'thumbnailUrl': img['thumbnailUrl'],
+            'thumbnailEncryption': img['thumbnailEncryption'],
+            'mimeType': img['mimeType'],
+            'filename': img['filename'],
+            'caption': i == 0 ? message.metadata['caption'] : '',
+          },
+        ),
+      );
     }
-    if (a.senderId != b.senderId) {
-      return false;
-    }
-    if (_mediaUrlFor(a) == null || _mediaUrlFor(b) == null) {
-      return false;
-    }
-    final diffSeconds = a.createdAt.difference(b.createdAt).inSeconds.abs();
-    return diffSeconds <= 45;
-  }
-
-  List<ChatMessage> _collectForwardBatch(
-    ChatMessage selected,
-    List<ChatMessage> allMessages,
-  ) {
-    if (selected.kind != MessageKind.image) {
-      return <ChatMessage>[selected];
-    }
-
-    final index = allMessages.indexWhere((m) => m.id == selected.id);
-    if (index < 0) {
-      return <ChatMessage>[selected];
-    }
-
-    var start = index;
-    while (start > 0 &&
-        _isImageClusterPair(allMessages[start - 1], allMessages[start])) {
-      start--;
-    }
-
-    var end = index;
-    while (end < allMessages.length - 1 &&
-        _isImageClusterPair(allMessages[end], allMessages[end + 1])) {
-      end++;
-    }
-
-    return allMessages.sublist(start, end + 1);
+    return images.isEmpty ? null : images;
   }
 
   bool get _isSelectionMode => _selectedMessageIds.isNotEmpty;
@@ -2070,10 +2511,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final seenIds = <String>{};
     final batch = <ChatMessage>[];
     for (final selected in _selectedMessagesFrom(allMessages)) {
-      for (final candidate in _collectForwardBatch(selected, allMessages)) {
-        if (seenIds.add(candidate.id)) {
-          batch.add(candidate);
-        }
+      // Exactly what was selected: separately sent images are separate messages now (only a
+      // gallery message is one collage), so neighbouring images are no longer pulled in.
+      if (seenIds.add(selected.id)) {
+        batch.add(selected);
       }
     }
     batch.sort((left, right) {
@@ -2451,10 +2892,24 @@ class _ChatScreenState extends State<ChatScreen> {
         replyKind == MessageKind.image.name ||
         replyKind == MessageKind.video.name;
     final replyThumbRaw = message.metadata['replyToThumbnailUrl'];
-    final replyThumb =
-        replyThumbRaw is String && replyThumbRaw.trim().isNotEmpty
-        ? replyThumbRaw.trim()
+    final replyMediaRaw = message.metadata['replyToMediaUrl'];
+    final hasRealReplyThumbnail =
+        replyThumbRaw is String && replyThumbRaw.trim().isNotEmpty;
+    // A real thumbnailUrl (video) needs its own thumbnailEncryption; falling back to the full
+    // attachment's URL (e.g. an image, which never gets a separate thumbnail) needs
+    // mediaEncryption instead — same distinction as _thumbnailMediaRefFor above.
+    final replyEncryptionRaw = hasRealReplyThumbnail
+        ? message.metadata['replyToThumbnailEncryption']
+        : message.metadata['replyToMediaEncryption'];
+    final replyEncryption = replyEncryptionRaw is Map
+        ? replyEncryptionRaw.cast<String, dynamic>()
         : null;
+    final replyThumb = _MediaRef.fromUrl(
+      hasRealReplyThumbnail
+          ? replyThumbRaw.trim()
+          : (replyMediaRaw is String ? replyMediaRaw.trim() : null),
+      replyEncryption,
+    );
     final replyForwarded = message.metadata['replyToIsForwarded'] == true;
     final replyBody = _structuredPreviewText(
       (message.replyToBody ?? '').trim(),
@@ -2518,10 +2973,10 @@ class _ChatScreenState extends State<ChatScreen> {
                       borderRadius: BorderRadius.circular(7),
                       color: Colors.black26,
                     ),
-                    child: CachedNetworkImage(
-                      imageUrl: replyThumb,
+                    child: _EncryptedImage(
+                      media: replyThumb,
                       fit: BoxFit.cover,
-                      errorWidget: (context, error, stackTrace) => const Icon(
+                      errorWidget: (context, error) => const Icon(
                         Icons.broken_image,
                         color: Colors.white60,
                         size: 16,
@@ -2565,18 +3020,16 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _openImageViewer(
     BuildContext context,
-    List<String> imageUrls,
+    List<_MediaRef> images,
     int initialIndex,
   ) {
-    if (imageUrls.isEmpty) {
+    if (images.isEmpty) {
       return;
     }
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => _ImageSlideshowScreen(
-          imageUrls: imageUrls,
-          initialIndex: initialIndex,
-        ),
+        builder: (_) =>
+            _ImageSlideshowScreen(images: images, initialIndex: initialIndex),
       ),
     );
   }
@@ -2589,90 +3042,100 @@ class _ChatScreenState extends State<ChatScreen> {
     required bool showInsideTime,
     required int effectiveReadCount,
   }) {
-    final fullUrls = imageGroup
-        .map(_mediaUrlFor)
-        .whereType<String>()
+    final fullImages = imageGroup
+        .map(_mediaRefFor)
+        .whereType<_MediaRef>()
         .toList(growable: false);
-    final thumbUrls = imageGroup
-        .map((m) => _thumbnailUrlFor(m) ?? _mediaUrlFor(m))
-        .whereType<String>()
+    final thumbImages = imageGroup
+        .map(_thumbnailMediaRefFor)
+        .whereType<_MediaRef>()
         .toList(growable: false);
     final caption = imageGroup
         .map((m) => (m.metadata['caption'] as String?) ?? '')
         .firstWhere((value) => value.isNotEmpty, orElse: () => '');
 
+    final stamp = (showInsideTime || mine)
+        ? Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (showInsideTime)
+                  Text(
+                    _bubbleTimeLabel(context, message.createdAt),
+                    style: const TextStyle(fontSize: 10, color: Colors.white),
+                  ),
+                if (mine)
+                  Padding(
+                    padding: EdgeInsets.only(left: showInsideTime ? 4 : 0),
+                    child: _SignalReceiptTicks(
+                      isSent: _messageHasServerAck(message),
+                      showReceivedCircle: _messageShowsReceivedCircle(message),
+                      isRead: effectiveReadCount > 0,
+                      isFailed: _messageIsFailed(message),
+                    ),
+                  ),
+              ],
+            ),
+          )
+        : null;
+
+    // Only a captioned image gets a chat bubble (bubbles are for text); an uncaptioned one sits
+    // straight on the chat background, so a transparent image shows through to it. The time and
+    // ticks sit on a small dark pill over the image's corner so they stay readable on any picture.
+    final hasCaption = caption.isNotEmpty;
     return ConstrainedBox(
       constraints: BoxConstraints(
         maxWidth: MediaQuery.of(context).size.width * 0.74,
       ),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 3),
-        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 10),
-        decoration: BoxDecoration(
-          color: mine
-              ? _appearance.myBubbleColor
-              : _appearance.otherBubbleColor,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(18),
-            topRight: const Radius.circular(18),
-            bottomLeft: Radius.circular(mine ? 18 : 5),
-            bottomRight: Radius.circular(mine ? 5 : 18),
-          ),
-        ),
+        padding: hasCaption ? const EdgeInsets.all(3) : EdgeInsets.zero,
+        decoration: hasCaption
+            ? BoxDecoration(
+                color: mine
+                    ? _appearance.myBubbleColor
+                    : _appearance.otherBubbleColor,
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(18),
+                  topRight: const Radius.circular(18),
+                  bottomLeft: Radius.circular(mine ? 18 : 5),
+                  bottomRight: Radius.circular(mine ? 5 : 18),
+                ),
+              )
+            : null,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: mine && !hasCaption
+              ? CrossAxisAlignment.end
+              : CrossAxisAlignment.start,
           children: [
             if (message.metadata['isForwarded'] == true)
               _buildForwardedIndicator(),
-            _ImageCollageGrid(
-              imageUrls: thumbUrls,
-              onOpenAt: (index) {
-                _openImageViewer(context, fullUrls, index);
-              },
+            Stack(
+              children: [
+                _ImageCollageGrid(
+                  images: thumbImages,
+                  onOpenAt: (index) {
+                    _openImageViewer(context, fullImages, index);
+                  },
+                ),
+                if (stamp != null)
+                  Positioned(right: 6, bottom: 6, child: stamp),
+              ],
             ),
-            if (caption.isNotEmpty)
+            if (hasCaption)
               Padding(
-                padding: const EdgeInsets.only(top: 4),
+                padding: const EdgeInsets.fromLTRB(7, 5, 7, 4),
                 child: Text(
                   caption,
                   style: TextStyle(
                     color: _appearance.messageTextColor,
                     fontSize: 14,
                     fontFamily: _appearance.messageFontFamily,
-                  ),
-                ),
-              ),
-            if (showInsideTime || mine)
-              Padding(
-                padding: EdgeInsets.only(top: caption.isNotEmpty ? 4 : 8),
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (showInsideTime)
-                        Text(
-                          _bubbleTimeLabel(context, message.createdAt),
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Colors.white70,
-                          ),
-                        ),
-                      if (mine)
-                        Padding(
-                          padding: EdgeInsets.only(
-                            left: showInsideTime ? 4 : 0,
-                          ),
-                          child: _SignalReceiptTicks(
-                            isSent: _messageHasServerAck(message),
-                            showReceivedCircle: _messageShowsReceivedCircle(
-                              message,
-                            ),
-                            isRead: effectiveReadCount > 0,
-                            isFailed: _messageIsFailed(message),
-                          ),
-                        ),
-                    ],
                   ),
                 ),
               ),
@@ -2686,6 +3149,14 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Consumer<ChatController>(
       builder: (context, controller, _) {
+        // Tell the controller which chat is on screen, so pushes for it skip the notification.
+        final activeRoomId = controller.activeRoomId;
+        if (activeRoomId != null && activeRoomId != _onScreenRoomId) {
+          final previous = _onScreenRoomId;
+          if (previous != null) controller.clearRoomOnScreen(previous);
+          _onScreenRoomId = activeRoomId;
+          controller.setRoomOnScreen(activeRoomId);
+        }
         final isChatMuted = _MutedChatStore.isMuted(
           _chatPreferenceKey(controller),
         );
@@ -2697,6 +3168,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   message.metadata['isDeleted'] != true,
             )
             .toList(growable: false);
+        if (visibleMessages.isNotEmpty) {
+          final latest = visibleMessages.last;
+          _scrollToLatestOnNewMessage(
+            latest.id,
+            latest.senderId == controller.matrixUserId,
+          );
+        }
         final replyTo = controller.replyToMessage;
         final typingUsers = controller.typingUsers;
         final participantsById = <String, ChatParticipant>{
@@ -2722,10 +3200,9 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         final events = _extractTimelineEvents(messages);
         _ensureLinkPreviewsLoaded(visibleMessages);
-        final eventClusters = _clusterTimelineEvents(events);
         final timelineEntries = _buildTimelineEntries(
           visibleMessages: visibleMessages,
-          eventClusters: eventClusters,
+          events: events,
         );
         final composerFocused = _composerFocusNode.hasFocus;
         final scrollFabBottom =
@@ -2755,6 +3232,8 @@ class _ChatScreenState extends State<ChatScreen> {
             appBar: _isSelectionMode
                 ? AppBar(
                     backgroundColor: PlayerUiSignalTheme.secondaryColor,
+                    // Dark app bar: white status-bar icons (the theme default gave black ones).
+                    systemOverlayStyle: SystemUiOverlayStyle.light,
                     automaticallyImplyLeading: false,
                     leadingWidth: 48,
                     leading: IconButton(
@@ -2871,6 +3350,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   )
                 : AppBar(
                     backgroundColor: PlayerUiSignalTheme.secondaryColor,
+                    systemOverlayStyle: SystemUiOverlayStyle.light,
                     automaticallyImplyLeading: false,
                     leading: IconButton(
                       onPressed: () => Navigator.of(context).maybePop(),
@@ -3042,139 +3522,596 @@ class _ChatScreenState extends State<ChatScreen> {
                   Column(
                     children: [
                       Expanded(
-                        child: ListView.builder(
-                          controller: _messagesScrollController,
-                          reverse: true,
-                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                          itemCount: timelineEntries.length,
-                          itemBuilder: (context, index) {
-                            final timelineIndex =
-                                timelineEntries.length - index - 1;
-                            final entry = timelineEntries[timelineIndex];
-                            if (entry.eventCluster != null) {
-                              final cluster = entry.eventCluster!;
-                              final isExpanded = _expandedEventClusterKeys
-                                  .contains(cluster.key);
-                              return _TimelineEventClusterCard(
-                                cluster: cluster,
-                                showAllEvents: isExpanded,
-                                onToggle: cluster.items.length > 1
-                                    ? () => _toggleEventCluster(cluster)
-                                    : null,
-                                relativeTime: _relativeTime,
-                              );
-                            }
-
-                            final message = entry.message!;
-                            final messageIndex = entry.messageIndex!;
-                            final mine =
-                                message.senderId == controller.matrixUserId;
-                            final effectiveReadCount =
-                                effectiveOwnReadCounts[message.id] ??
-                                message.readCount;
-                            final participant =
-                                participantsById[message.senderId];
-                            final senderName =
-                                participant?.displayName ?? message.senderName;
-                            final senderAvatarUrl = participant?.avatarUrl;
-                            final senderPresence = controller
-                                .cachedUserPresence(message.senderId);
-                            final isOtherOnline =
-                                !mine &&
-                                (typingUsers.any(
-                                      (typing) =>
-                                          typing.userId == message.senderId,
-                                    ) ||
-                                    senderPresence?.isOnline == true);
-                            final centeredTimeEligible =
-                                _shouldShowCenteredTime(message.createdAt);
-
-                            final olderMessage = messageIndex > 0
-                                ? visibleMessages[messageIndex - 1]
-                                : null;
-                            final newerMessage =
-                                messageIndex < visibleMessages.length - 1
-                                ? visibleMessages[messageIndex + 1]
-                                : null;
-
-                            final closeToOlderSameSender =
-                                olderMessage != null &&
-                                olderMessage.senderId == message.senderId &&
-                                message.createdAt
-                                        .difference(olderMessage.createdAt)
-                                        .inMinutes <
-                                    1;
-                            final closeToNewerSameSender =
-                                newerMessage != null &&
-                                newerMessage.senderId == message.senderId &&
-                                newerMessage.createdAt
-                                        .difference(message.createdAt)
-                                        .inMinutes <
-                                    1;
-                            final senderChangedFromPrevious =
-                                olderMessage == null ||
-                                olderMessage.senderId != message.senderId;
-                            final previewUrl = _extractFirstPreviewUrl(message);
-                            final linkPreview = previewUrl == null
-                                ? null
-                                : _linkPreviewByUrl[previewUrl];
-                            final showCenteredTime =
-                                centeredTimeEligible &&
-                                _startsCenteredTimeCluster(
-                                  message,
-                                  olderMessage,
+                        child: DefaultTextStyle.merge(
+                          style: TextStyle(
+                            fontFamily: _appearance.messageFontFamily,
+                          ),
+                          child: ListView.builder(
+                            controller: _messagesScrollController,
+                            reverse: true,
+                            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                            itemCount: timelineEntries.length,
+                            itemBuilder: (context, index) {
+                              final timelineIndex =
+                                  timelineEntries.length - index - 1;
+                              final entry = timelineEntries[timelineIndex];
+                              if (entry.eventCluster != null) {
+                                final cluster = entry.eventCluster!;
+                                final isExpanded = _expandedEventClusterKeys
+                                    .contains(cluster.key);
+                                return _TimelineEventClusterCard(
+                                  cluster: cluster,
+                                  showAllEvents: isExpanded,
+                                  onToggle: cluster.items.length > 1
+                                      ? () => _toggleEventCluster(cluster)
+                                      : null,
+                                  relativeTime: _relativeTime,
                                 );
-
-                            var showSenderHeader =
-                                !mine && senderChangedFromPrevious;
-                            final showInsideTime = mine
-                                ? !closeToOlderSameSender
-                                : !closeToNewerSameSender;
-
-                            if (message.kind == MessageKind.image &&
-                                _mediaUrlFor(message) != null) {
-                              final groupedWithNewer =
-                                  newerMessage != null &&
-                                  _isImageClusterPair(message, newerMessage);
-                              if (groupedWithNewer) {
-                                return const SizedBox.shrink();
                               }
 
-                              final imageGroup = <ChatMessage>[message];
-                              var cursor = messageIndex - 1;
-                              while (cursor >= 0) {
-                                final candidate = visibleMessages[cursor];
-                                final anchor = imageGroup.last;
-                                if (_isImageClusterPair(candidate, anchor)) {
-                                  imageGroup.add(candidate);
-                                  cursor--;
-                                  continue;
-                                }
-                                break;
-                              }
+                              final message = entry.message!;
+                              final messageIndex = entry.messageIndex!;
+                              final mine =
+                                  message.senderId == controller.matrixUserId;
+                              final effectiveReadCount =
+                                  effectiveOwnReadCounts[message.id] ??
+                                  message.readCount;
+                              final participant =
+                                  participantsById[message.senderId];
+                              final senderName =
+                                  participant?.displayName ??
+                                  message.senderName;
+                              final senderAvatarUrl = participant?.avatarUrl;
+                              final senderPresence = controller
+                                  .cachedUserPresence(message.senderId);
+                              final isOtherOnline =
+                                  !mine &&
+                                  (typingUsers.any(
+                                        (typing) =>
+                                            typing.userId == message.senderId,
+                                      ) ||
+                                      senderPresence?.isOnline == true);
+                              final centeredTimeEligible =
+                                  _shouldShowCenteredTime(message.createdAt);
 
-                              final previousVisibleMessage = cursor >= 0
-                                  ? visibleMessages[cursor]
+                              final olderMessage = messageIndex > 0
+                                  ? visibleMessages[messageIndex - 1]
                                   : null;
-                              final showGroupedCenteredTime =
+                              final newerMessage =
+                                  messageIndex < visibleMessages.length - 1
+                                  ? visibleMessages[messageIndex + 1]
+                                  : null;
+
+                              final closeToOlderSameSender =
+                                  olderMessage != null &&
+                                  olderMessage.senderId == message.senderId &&
+                                  message.createdAt
+                                          .difference(olderMessage.createdAt)
+                                          .inMinutes <
+                                      1;
+                              final closeToNewerSameSender =
+                                  newerMessage != null &&
+                                  newerMessage.senderId == message.senderId &&
+                                  newerMessage.createdAt
+                                          .difference(message.createdAt)
+                                          .inMinutes <
+                                      1;
+                              final senderChangedFromPrevious =
+                                  olderMessage == null ||
+                                  olderMessage.senderId != message.senderId;
+                              final previewUrl = _extractFirstPreviewUrl(
+                                message,
+                              );
+                              final linkPreview = previewUrl == null
+                                  ? null
+                                  : _linkPreviewByUrl[previewUrl];
+                              final showCenteredTime =
                                   centeredTimeEligible &&
                                   _startsCenteredTimeCluster(
                                     message,
-                                    previousVisibleMessage,
+                                    olderMessage,
                                   );
-                              showSenderHeader =
-                                  !mine &&
-                                  (previousVisibleMessage == null ||
-                                      previousVisibleMessage.senderId !=
-                                          message.senderId);
 
-                              final bubble = _buildImageGroupBubble(
-                                context: context,
-                                message: message,
-                                imageGroup: imageGroup,
-                                mine: mine,
-                                showInsideTime: showInsideTime,
-                                effectiveReadCount: effectiveReadCount,
+                              var showSenderHeader =
+                                  !mine && senderChangedFromPrevious;
+                              final showInsideTime = mine
+                                  ? !closeToOlderSameSender
+                                  : !closeToNewerSameSender;
+
+                              if (message.kind == MessageKind.image &&
+                                  _mediaUrlFor(message) != null) {
+                                // Only a gallery (multi-image) message shows as one collage -
+                                // it carries all its images itself. Images sent as separate
+                                // messages each get their own bubble, even when sent back to
+                                // back, rather than being merged into a collage.
+                                final gallery = _galleryMessagesFor(message);
+                                final imageGroup =
+                                    gallery ?? <ChatMessage>[message];
+                                final previousVisibleMessage = messageIndex > 0
+                                    ? visibleMessages[messageIndex - 1]
+                                    : null;
+                                final showGroupedCenteredTime =
+                                    centeredTimeEligible &&
+                                    _startsCenteredTimeCluster(
+                                      message,
+                                      previousVisibleMessage,
+                                    );
+                                showSenderHeader =
+                                    !mine &&
+                                    (previousVisibleMessage == null ||
+                                        previousVisibleMessage.senderId !=
+                                            message.senderId);
+
+                                final bubble = _buildImageGroupBubble(
+                                  context: context,
+                                  message: message,
+                                  imageGroup: imageGroup,
+                                  mine: mine,
+                                  showInsideTime: showInsideTime,
+                                  effectiveReadCount: effectiveReadCount,
+                                );
+                                final bubbleWithReaction =
+                                    _buildBubbleWithReactionOverlay(
+                                      message: message,
+                                      bubble: bubble,
+                                      controller: controller,
+                                    );
+
+                                final row = mine
+                                    ? Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.end,
+                                        children: [
+                                          Flexible(child: bubbleWithReaction),
+                                        ],
+                                      )
+                                    : Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          if (showSenderHeader)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 12,
+                                              ),
+                                              child: _AvatarThumb(
+                                                imageUrl: senderAvatarUrl,
+                                                initials: senderName.isEmpty
+                                                    ? '?'
+                                                    : senderName[0]
+                                                          .toUpperCase(),
+                                                size: 32,
+                                                backgroundColor:
+                                                    PlayerUiSignalTheme
+                                                        .mobileSearchColor,
+                                                showPresence: true,
+                                                isOnline: isOtherOnline,
+                                              ),
+                                            )
+                                          else
+                                            const SizedBox(width: 32),
+                                          const SizedBox(width: 8),
+                                          Flexible(
+                                            child: showSenderHeader
+                                                ? Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                      Padding(
+                                                        padding:
+                                                            const EdgeInsets.only(
+                                                              left: 2,
+                                                            ),
+                                                        child: Text(
+                                                          senderName,
+                                                          style:
+                                                              const TextStyle(
+                                                                fontSize: 11,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600,
+                                                                color: Color(
+                                                                  0xFF7D9EC0,
+                                                                ),
+                                                              ),
+                                                        ),
+                                                      ),
+                                                      bubbleWithReaction,
+                                                    ],
+                                                  )
+                                                : bubbleWithReaction,
+                                          ),
+                                        ],
+                                      );
+
+                                return Dismissible(
+                                  key: ValueKey(
+                                    '${message.id}_${message.createdAt.millisecondsSinceEpoch}',
+                                  ),
+                                  direction: _isSelectionMode
+                                      ? DismissDirection.none
+                                      : DismissDirection.horizontal,
+                                  confirmDismiss: (_) async {
+                                    controller.setReplyTarget(message);
+                                    _composerFocusNode.requestFocus();
+                                    return false;
+                                  },
+                                  background: _ReplySwipeBackground(
+                                    alignment: mine,
+                                  ),
+                                  secondaryBackground: _ReplySwipeBackground(
+                                    alignment: !mine,
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      if (showGroupedCenteredTime)
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 6,
+                                          ),
+                                          child: Text(
+                                            _formatClock(
+                                              context,
+                                              message.createdAt,
+                                              previousTime:
+                                                  previousVisibleMessage
+                                                      ?.createdAt,
+                                            ),
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.white54,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                        ),
+                                      _buildSelectableMessageRow(
+                                        message: message,
+                                        mine: mine,
+                                        child: row,
+                                      ),
+                                      AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 180,
+                                        ),
+                                        switchInCurve: Curves.easeOutCubic,
+                                        switchOutCurve: Curves.easeInCubic,
+                                        transitionBuilder: (child, animation) {
+                                          return FadeTransition(
+                                            opacity: animation,
+                                            child: ScaleTransition(
+                                              scale: Tween<double>(
+                                                begin: 0.94,
+                                                end: 1,
+                                              ).animate(animation),
+                                              child: child,
+                                            ),
+                                          );
+                                        },
+                                        child:
+                                            _singleSelectedMessageId ==
+                                                message.id
+                                            ? KeyedSubtree(
+                                                key: ValueKey(
+                                                  'hover_${message.id}',
+                                                ),
+                                                child:
+                                                    _buildInlineReactionHover(
+                                                      controller: controller,
+                                                      message: message,
+                                                      mine: mine,
+                                                    ),
+                                              )
+                                            : const SizedBox.shrink(
+                                                key: ValueKey('hover_none'),
+                                              ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }
+
+                              final structuredMessage = _parseStructuredMessage(
+                                message,
+                              );
+                              final isStandalonePoll =
+                                  structuredMessage?.type ==
+                                  _StructuredMessageType.poll;
+                              if (isStandalonePoll) {
+                                final pollContent = _buildStandalonePollMessage(
+                                  context: context,
+                                  data: structuredMessage!,
+                                  message: message,
+                                  senderName: senderName,
+                                  senderAvatarUrl: senderAvatarUrl,
+                                  isOtherOnline: isOtherOnline,
+                                  mine: mine,
+                                  showInsideTime: showInsideTime,
+                                  effectiveReadCount: effectiveReadCount,
+                                  controller: controller,
+                                );
+                                final pollWithReaction =
+                                    _buildBubbleWithReactionOverlay(
+                                      message: message,
+                                      bubble: pollContent,
+                                      controller: controller,
+                                    );
+
+                                return Dismissible(
+                                  key: ValueKey(
+                                    '${message.id}_${message.createdAt.millisecondsSinceEpoch}',
+                                  ),
+                                  direction: _isSelectionMode
+                                      ? DismissDirection.none
+                                      : DismissDirection.horizontal,
+                                  confirmDismiss: (_) async {
+                                    controller.setReplyTarget(message);
+                                    _composerFocusNode.requestFocus();
+                                    return false;
+                                  },
+                                  background: _ReplySwipeBackground(
+                                    alignment: mine,
+                                  ),
+                                  secondaryBackground: _ReplySwipeBackground(
+                                    alignment: !mine,
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      if (showCenteredTime)
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 6,
+                                          ),
+                                          child: Text(
+                                            _formatClock(
+                                              context,
+                                              message.createdAt,
+                                              previousTime:
+                                                  olderMessage?.createdAt,
+                                            ),
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.white54,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                        ),
+                                      _buildSelectableMessageRow(
+                                        message: message,
+                                        mine: mine,
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: [
+                                            Flexible(child: pollWithReaction),
+                                          ],
+                                        ),
+                                      ),
+                                      AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 180,
+                                        ),
+                                        switchInCurve: Curves.easeOutCubic,
+                                        switchOutCurve: Curves.easeInCubic,
+                                        transitionBuilder: (child, animation) {
+                                          return FadeTransition(
+                                            opacity: animation,
+                                            child: ScaleTransition(
+                                              scale: Tween<double>(
+                                                begin: 0.94,
+                                                end: 1,
+                                              ).animate(animation),
+                                              child: child,
+                                            ),
+                                          );
+                                        },
+                                        child:
+                                            _singleSelectedMessageId ==
+                                                message.id
+                                            ? KeyedSubtree(
+                                                key: ValueKey(
+                                                  'hover_${message.id}',
+                                                ),
+                                                child:
+                                                    _buildInlineReactionHover(
+                                                      controller: controller,
+                                                      message: message,
+                                                      mine: mine,
+                                                    ),
+                                              )
+                                            : const SizedBox.shrink(
+                                                key: ValueKey('hover_none'),
+                                              ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }
+                              // Only messages with text get a bubble: an emoji-only message or
+                              // an uncaptioned video sits straight on the chat background (a
+                              // reply keeps its bubble, since the quoted text is part of it).
+                              final bubbleless =
+                                  message.replyToEventId == null &&
+                                  structuredMessage == null &&
+                                  previewUrl == null &&
+                                  (_isEmojiOnlyMessage(message) ||
+                                      (_isPlayableVideo(message) &&
+                                          ((message.metadata['caption']
+                                                          as String?)
+                                                      ?.trim() ??
+                                                  '')
+                                              .isEmpty));
+                              final bubble = ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth:
+                                      MediaQuery.of(context).size.width * 0.74,
+                                ),
+                                child: Container(
+                                  margin: const EdgeInsets.symmetric(
+                                    vertical: 3,
+                                  ),
+                                  padding: bubbleless
+                                      ? const EdgeInsets.symmetric(
+                                          horizontal: 2,
+                                        )
+                                      : _locationOf(message) != null
+                                      ? const EdgeInsets.all(3)
+                                      : const EdgeInsets.symmetric(
+                                          vertical: 7,
+                                          horizontal: 10,
+                                        ),
+                                  decoration: bubbleless
+                                      ? null
+                                      : BoxDecoration(
+                                          color: mine
+                                              ? _appearance.myBubbleColor
+                                              : _appearance.otherBubbleColor,
+                                          borderRadius: BorderRadius.only(
+                                            topLeft: const Radius.circular(18),
+                                            topRight: const Radius.circular(18),
+                                            bottomLeft: Radius.circular(
+                                              mine ? 18 : 5,
+                                            ),
+                                            bottomRight: Radius.circular(
+                                              mine ? 5 : 18,
+                                            ),
+                                          ),
+                                        ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      if (message.replyToEventId != null)
+                                        _buildReplyPreviewInBubble(message),
+                                      if (message.metadata['isForwarded'] ==
+                                          true)
+                                        _buildForwardedIndicator(),
+                                      if (structuredMessage != null)
+                                        _buildStructuredMessageContent(
+                                          data: structuredMessage,
+                                          message: message,
+                                          mine: mine,
+                                          showInsideTime: showInsideTime,
+                                          effectiveReadCount:
+                                              effectiveReadCount,
+                                          controller: controller,
+                                        )
+                                      else if (_isAudioAttachment(message))
+                                        _buildAudioMessageContent(
+                                          message: message,
+                                          mine: mine,
+                                          showInsideTime: showInsideTime,
+                                          effectiveReadCount:
+                                              effectiveReadCount,
+                                        )
+                                      else if (_isPlayableVideo(message))
+                                        _buildVideoMessageContent(
+                                          context: context,
+                                          message: message,
+                                          mine: mine,
+                                          showInsideTime: showInsideTime,
+                                          effectiveReadCount:
+                                              effectiveReadCount,
+                                        )
+                                      else if (_locationOf(message) != null)
+                                        _buildLocationMessageContent(
+                                          message: message,
+                                          mine: mine,
+                                          showInsideTime: showInsideTime,
+                                          effectiveReadCount:
+                                              effectiveReadCount,
+                                        )
+                                      else if (_isDocumentAttachment(message))
+                                        _buildDocumentMessageContent(
+                                          message: message,
+                                          mine: mine,
+                                          showInsideTime: showInsideTime,
+                                          effectiveReadCount:
+                                              effectiveReadCount,
+                                        )
+                                      else if (previewUrl != null)
+                                        _buildLinkPreviewMessageContent(
+                                          message: message,
+                                          mine: mine,
+                                          showInsideTime: showInsideTime,
+                                          effectiveReadCount:
+                                              effectiveReadCount,
+                                          previewUrl: previewUrl,
+                                          preview: linkPreview,
+                                        )
+                                      else
+                                        RichText(
+                                          text: TextSpan(
+                                            style: TextStyle(
+                                              fontSize:
+                                                  _isEmojiOnlyMessage(message)
+                                                  ? 28
+                                                  : 16,
+                                              fontWeight: FontWeight.w400,
+                                              color:
+                                                  _appearance.messageTextColor,
+                                              fontFamily:
+                                                  _appearance.messageFontFamily,
+                                            ),
+                                            children: [
+                                              TextSpan(text: message.body),
+                                              if (showInsideTime || mine)
+                                                const TextSpan(text: '  '),
+                                              if (showInsideTime)
+                                                WidgetSpan(
+                                                  alignment:
+                                                      PlaceholderAlignment
+                                                          .baseline,
+                                                  baseline:
+                                                      TextBaseline.alphabetic,
+                                                  child: Text(
+                                                    _bubbleTimeLabel(
+                                                      context,
+                                                      message.createdAt,
+                                                    ),
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.white70,
+                                                    ),
+                                                  ),
+                                                ),
+                                              if (mine)
+                                                WidgetSpan(
+                                                  alignment:
+                                                      PlaceholderAlignment
+                                                          .middle,
+                                                  child: Padding(
+                                                    padding: EdgeInsets.only(
+                                                      left: showInsideTime
+                                                          ? 4
+                                                          : 0,
+                                                    ),
+                                                    child: _SignalReceiptTicks(
+                                                      isSent:
+                                                          _messageHasServerAck(
+                                                            message,
+                                                          ),
+                                                      showReceivedCircle:
+                                                          _messageShowsReceivedCircle(
+                                                            message,
+                                                          ),
+                                                      isRead:
+                                                          effectiveReadCount >
+                                                          0,
+                                                      isFailed:
+                                                          _messageIsFailed(
+                                                            message,
+                                                          ),
+                                                    ),
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                          softWrap: true,
+                                        ),
+                                    ],
+                                  ),
+                                ),
                               );
                               final bubbleWithReaction =
                                   _buildBubbleWithReactionOverlay(
@@ -3266,7 +4203,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 ),
                                 child: Column(
                                   children: [
-                                    if (showGroupedCenteredTime)
+                                    if (showCenteredTime)
                                       Padding(
                                         padding: const EdgeInsets.symmetric(
                                           vertical: 6,
@@ -3275,8 +4212,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                           _formatClock(
                                             context,
                                             message.createdAt,
-                                            previousTime: previousVisibleMessage
-                                                ?.createdAt,
+                                            previousTime:
+                                                olderMessage?.createdAt,
                                           ),
                                           style: const TextStyle(
                                             fontSize: 11,
@@ -3327,401 +4264,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                   ],
                                 ),
                               );
-                            }
-
-                            final structuredMessage = _parseStructuredMessage(
-                              message,
-                            );
-                            final isStandalonePoll =
-                                structuredMessage?.type ==
-                                _StructuredMessageType.poll;
-                            if (isStandalonePoll) {
-                              final pollContent = _buildStandalonePollMessage(
-                                context: context,
-                                data: structuredMessage!,
-                                message: message,
-                                senderName: senderName,
-                                senderAvatarUrl: senderAvatarUrl,
-                                isOtherOnline: isOtherOnline,
-                                mine: mine,
-                                showInsideTime: showInsideTime,
-                                effectiveReadCount: effectiveReadCount,
-                                controller: controller,
-                              );
-                              final pollWithReaction =
-                                  _buildBubbleWithReactionOverlay(
-                                    message: message,
-                                    bubble: pollContent,
-                                    controller: controller,
-                                  );
-
-                              return Dismissible(
-                                key: ValueKey(
-                                  '${message.id}_${message.createdAt.millisecondsSinceEpoch}',
-                                ),
-                                direction: _isSelectionMode
-                                    ? DismissDirection.none
-                                    : DismissDirection.horizontal,
-                                confirmDismiss: (_) async {
-                                  controller.setReplyTarget(message);
-                                  _composerFocusNode.requestFocus();
-                                  return false;
-                                },
-                                background: _ReplySwipeBackground(
-                                  alignment: mine,
-                                ),
-                                secondaryBackground: _ReplySwipeBackground(
-                                  alignment: !mine,
-                                ),
-                                child: Column(
-                                  children: [
-                                    if (showCenteredTime)
-                                      Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 6,
-                                        ),
-                                        child: Text(
-                                          _formatClock(
-                                            context,
-                                            message.createdAt,
-                                            previousTime:
-                                                olderMessage?.createdAt,
-                                          ),
-                                          style: const TextStyle(
-                                            fontSize: 11,
-                                            color: Colors.white54,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                      ),
-                                    _buildSelectableMessageRow(
-                                      message: message,
-                                      mine: mine,
-                                      child: Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
-                                        children: [
-                                          Flexible(child: pollWithReaction),
-                                        ],
-                                      ),
-                                    ),
-                                    AnimatedSwitcher(
-                                      duration: const Duration(
-                                        milliseconds: 180,
-                                      ),
-                                      switchInCurve: Curves.easeOutCubic,
-                                      switchOutCurve: Curves.easeInCubic,
-                                      transitionBuilder: (child, animation) {
-                                        return FadeTransition(
-                                          opacity: animation,
-                                          child: ScaleTransition(
-                                            scale: Tween<double>(
-                                              begin: 0.94,
-                                              end: 1,
-                                            ).animate(animation),
-                                            child: child,
-                                          ),
-                                        );
-                                      },
-                                      child:
-                                          _singleSelectedMessageId == message.id
-                                          ? KeyedSubtree(
-                                              key: ValueKey(
-                                                'hover_${message.id}',
-                                              ),
-                                              child: _buildInlineReactionHover(
-                                                controller: controller,
-                                                message: message,
-                                                mine: mine,
-                                              ),
-                                            )
-                                          : const SizedBox.shrink(
-                                              key: ValueKey('hover_none'),
-                                            ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }
-                            final bubble = ConstrainedBox(
-                              constraints: BoxConstraints(
-                                maxWidth:
-                                    MediaQuery.of(context).size.width * 0.74,
-                              ),
-                              child: Container(
-                                margin: const EdgeInsets.symmetric(vertical: 3),
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 7,
-                                  horizontal: 10,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: mine
-                                      ? _appearance.myBubbleColor
-                                      : _appearance.otherBubbleColor,
-                                  borderRadius: BorderRadius.only(
-                                    topLeft: const Radius.circular(18),
-                                    topRight: const Radius.circular(18),
-                                    bottomLeft: Radius.circular(mine ? 18 : 5),
-                                    bottomRight: Radius.circular(mine ? 5 : 18),
-                                  ),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    if (message.replyToEventId != null)
-                                      _buildReplyPreviewInBubble(message),
-                                    if (message.metadata['isForwarded'] == true)
-                                      _buildForwardedIndicator(),
-                                    if (structuredMessage != null)
-                                      _buildStructuredMessageContent(
-                                        data: structuredMessage,
-                                        message: message,
-                                        mine: mine,
-                                        showInsideTime: showInsideTime,
-                                        effectiveReadCount: effectiveReadCount,
-                                        controller: controller,
-                                      )
-                                    else if (_isAudioAttachment(message))
-                                      _buildAudioMessageContent(
-                                        message: message,
-                                        mine: mine,
-                                        showInsideTime: showInsideTime,
-                                        effectiveReadCount: effectiveReadCount,
-                                      )
-                                    else if (_isDocumentAttachment(message))
-                                      _buildDocumentMessageContent(
-                                        message: message,
-                                        mine: mine,
-                                        showInsideTime: showInsideTime,
-                                        effectiveReadCount: effectiveReadCount,
-                                      )
-                                    else if (previewUrl != null)
-                                      _buildLinkPreviewMessageContent(
-                                        message: message,
-                                        mine: mine,
-                                        showInsideTime: showInsideTime,
-                                        effectiveReadCount: effectiveReadCount,
-                                        previewUrl: previewUrl,
-                                        preview: linkPreview,
-                                      )
-                                    else
-                                      RichText(
-                                        text: TextSpan(
-                                          style: TextStyle(
-                                            fontSize:
-                                                message.kind ==
-                                                    MessageKind.emoji
-                                                ? 28
-                                                : 16,
-                                            fontWeight: FontWeight.w400,
-                                            color: _appearance.messageTextColor,
-                                            fontFamily:
-                                                _appearance.messageFontFamily,
-                                          ),
-                                          children: [
-                                            TextSpan(text: message.body),
-                                            if (showInsideTime || mine)
-                                              const TextSpan(text: '  '),
-                                            if (showInsideTime)
-                                              WidgetSpan(
-                                                alignment: PlaceholderAlignment
-                                                    .baseline,
-                                                baseline:
-                                                    TextBaseline.alphabetic,
-                                                child: Text(
-                                                  _bubbleTimeLabel(
-                                                    context,
-                                                    message.createdAt,
-                                                  ),
-                                                  style: const TextStyle(
-                                                    fontSize: 10,
-                                                    color: Colors.white70,
-                                                  ),
-                                                ),
-                                              ),
-                                            if (mine)
-                                              WidgetSpan(
-                                                alignment:
-                                                    PlaceholderAlignment.middle,
-                                                child: Padding(
-                                                  padding: EdgeInsets.only(
-                                                    left: showInsideTime
-                                                        ? 4
-                                                        : 0,
-                                                  ),
-                                                  child: _SignalReceiptTicks(
-                                                    isSent:
-                                                        _messageHasServerAck(
-                                                          message,
-                                                        ),
-                                                    showReceivedCircle:
-                                                        _messageShowsReceivedCircle(
-                                                          message,
-                                                        ),
-                                                    isRead:
-                                                        effectiveReadCount > 0,
-                                                    isFailed: _messageIsFailed(
-                                                      message,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                        softWrap: true,
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            );
-                            final bubbleWithReaction =
-                                _buildBubbleWithReactionOverlay(
-                                  message: message,
-                                  bubble: bubble,
-                                  controller: controller,
-                                );
-
-                            final row = mine
-                                ? Row(
-                                    mainAxisAlignment: MainAxisAlignment.end,
-                                    children: [
-                                      Flexible(child: bubbleWithReaction),
-                                    ],
-                                  )
-                                : Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      if (showSenderHeader)
-                                        Padding(
-                                          padding: const EdgeInsets.only(
-                                            top: 12,
-                                          ),
-                                          child: _AvatarThumb(
-                                            imageUrl: senderAvatarUrl,
-                                            initials: senderName.isEmpty
-                                                ? '?'
-                                                : senderName[0].toUpperCase(),
-                                            size: 32,
-                                            backgroundColor: PlayerUiSignalTheme
-                                                .mobileSearchColor,
-                                            showPresence: true,
-                                            isOnline: isOtherOnline,
-                                          ),
-                                        )
-                                      else
-                                        const SizedBox(width: 32),
-                                      const SizedBox(width: 8),
-                                      Flexible(
-                                        child: showSenderHeader
-                                            ? Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Padding(
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                          left: 2,
-                                                        ),
-                                                    child: Text(
-                                                      senderName,
-                                                      style: const TextStyle(
-                                                        fontSize: 11,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                        color: Color(
-                                                          0xFF7D9EC0,
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ),
-                                                  bubbleWithReaction,
-                                                ],
-                                              )
-                                            : bubbleWithReaction,
-                                      ),
-                                    ],
-                                  );
-
-                            return Dismissible(
-                              key: ValueKey(
-                                '${message.id}_${message.createdAt.millisecondsSinceEpoch}',
-                              ),
-                              direction: _isSelectionMode
-                                  ? DismissDirection.none
-                                  : DismissDirection.horizontal,
-                              confirmDismiss: (_) async {
-                                controller.setReplyTarget(message);
-                                _composerFocusNode.requestFocus();
-                                return false;
-                              },
-                              background: _ReplySwipeBackground(
-                                alignment: mine,
-                              ),
-                              secondaryBackground: _ReplySwipeBackground(
-                                alignment: !mine,
-                              ),
-                              child: Column(
-                                children: [
-                                  if (showCenteredTime)
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 6,
-                                      ),
-                                      child: Text(
-                                        _formatClock(
-                                          context,
-                                          message.createdAt,
-                                          previousTime: olderMessage?.createdAt,
-                                        ),
-                                        style: const TextStyle(
-                                          fontSize: 11,
-                                          color: Colors.white54,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ),
-                                  _buildSelectableMessageRow(
-                                    message: message,
-                                    mine: mine,
-                                    child: row,
-                                  ),
-                                  AnimatedSwitcher(
-                                    duration: const Duration(milliseconds: 180),
-                                    switchInCurve: Curves.easeOutCubic,
-                                    switchOutCurve: Curves.easeInCubic,
-                                    transitionBuilder: (child, animation) {
-                                      return FadeTransition(
-                                        opacity: animation,
-                                        child: ScaleTransition(
-                                          scale: Tween<double>(
-                                            begin: 0.94,
-                                            end: 1,
-                                          ).animate(animation),
-                                          child: child,
-                                        ),
-                                      );
-                                    },
-                                    child:
-                                        _singleSelectedMessageId == message.id
-                                        ? KeyedSubtree(
-                                            key: ValueKey(
-                                              'hover_${message.id}',
-                                            ),
-                                            child: _buildInlineReactionHover(
-                                              controller: controller,
-                                              message: message,
-                                              mine: mine,
-                                            ),
-                                          )
-                                        : const SizedBox.shrink(
-                                            key: ValueKey('hover_none'),
-                                          ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
+                            },
+                          ),
                         ),
                       ),
                       AnimatedSize(
@@ -3809,7 +4353,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           child: Row(
                             children: [
                               if (replyTo.kind == MessageKind.image &&
-                                  _thumbnailUrlFor(replyTo) != null)
+                                  _thumbnailMediaRefFor(replyTo) != null)
                                 Container(
                                   width: 46,
                                   height: 46,
@@ -3819,14 +4363,13 @@ class _ChatScreenState extends State<ChatScreen> {
                                     color: Colors.black26,
                                   ),
                                   clipBehavior: Clip.antiAlias,
-                                  child: CachedNetworkImage(
-                                    imageUrl: _thumbnailUrlFor(replyTo)!,
+                                  child: _EncryptedImage(
+                                    media: _thumbnailMediaRefFor(replyTo)!,
                                     fit: BoxFit.cover,
-                                    errorWidget: (context, error, stackTrace) =>
-                                        const Icon(
-                                          Icons.broken_image,
-                                          color: Colors.white70,
-                                        ),
+                                    errorWidget: (context, error) => const Icon(
+                                      Icons.broken_image,
+                                      color: Colors.white70,
+                                    ),
                                   ),
                                 ),
                               Expanded(
@@ -3864,170 +4407,192 @@ class _ChatScreenState extends State<ChatScreen> {
                             ],
                           ),
                         ),
+                      // Composer — same look as cluborbit-web's ChatWindow: separate rounded-square
+                      // attach/emoji buttons, a boxed text field, and mic ↔ send on the right (send
+                      // takes the user's bubble colour once there's text).
                       SafeArea(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-                          child: Container(
-                            constraints: const BoxConstraints(minHeight: 38),
-                            clipBehavior: Clip.antiAlias,
-                            decoration: BoxDecoration(
-                              color: Colors.transparent,
-                              borderRadius: BorderRadius.circular(24),
-                              border: Border.all(
-                                color: composerFocused
-                                    ? PlayerUiSignalTheme.primaryDarkColor
-                                    : PlayerUiSignalTheme.primaryDarkColor
-                                          .withAlpha(195),
-                                width: composerFocused ? 1.5 : 1.2,
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            border: Border(
+                              top: BorderSide(
+                                color: Colors.white.withValues(alpha: 0.06),
                               ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: PlayerUiSignalTheme.primaryDarkColor
-                                      .withAlpha(composerFocused ? 60 : 24),
-                                  blurRadius: composerFocused ? 10 : 6,
-                                  spreadRadius: composerFocused ? 1.0 : 0,
-                                ),
-                              ],
                             ),
-                            child: Row(
-                              children: [
-                                SizedBox(
-                                  width: 38,
-                                  child: IconButton(
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(
-                                      minWidth: 32,
-                                      minHeight: 32,
-                                    ),
-                                    visualDensity: VisualDensity.compact,
-                                    onPressed: () {
-                                      FocusScope.of(context).unfocus();
-                                      setState(() {
-                                        _showEmojiPickerPanel =
-                                            !_showEmojiPickerPanel;
-                                      });
-                                    },
-                                    icon: const Icon(
-                                      Icons.emoji_emotions_outlined,
-                                      size: 20,
-                                      color:
-                                          PlayerUiSignalTheme.primaryDarkColor,
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(
-                                  width: 38,
-                                  child: IconButton(
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(
-                                      minWidth: 32,
-                                      minHeight: 32,
-                                    ),
-                                    visualDensity: VisualDensity.compact,
-                                    onPressed: () =>
-                                        _openAttachmentSheet(controller),
-                                    icon: const Icon(
-                                      Icons.add_circle_outline,
-                                      size: 20,
-                                      color:
-                                          PlayerUiSignalTheme.primaryDarkColor,
-                                    ),
-                                  ),
-                                ),
-                                Expanded(
-                                  child: TextField(
-                                    controller: _composerController,
-                                    focusNode: _composerFocusNode,
-                                    minLines: 1,
-                                    maxLines: null,
-                                    textAlignVertical: TextAlignVertical.center,
-                                    keyboardType: TextInputType.multiline,
-                                    cursorColor: Colors.white,
-                                    style: TextStyle(
-                                      fontFamily: _appearance.messageFontFamily,
-                                      fontSize: 14,
-                                      color: _appearance.messageTextColor,
-                                    ),
-                                    decoration: InputDecoration(
-                                      hintText: 'Type message',
-                                      filled: false,
-                                      fillColor: Colors.transparent,
-                                      border: InputBorder.none,
-                                      enabledBorder: InputBorder.none,
-                                      focusedBorder: InputBorder.none,
-                                      contentPadding:
-                                          const EdgeInsets.symmetric(
-                                            horizontal: 8,
-                                            vertical: 10,
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              // The + button steps aside while typing so the text
+                              // field gets the room (same as the web composer).
+                              ValueListenableBuilder<TextEditingValue>(
+                                valueListenable: _composerController,
+                                builder: (context, value, _) {
+                                  final typing = value.text.isNotEmpty;
+                                  return AnimatedSize(
+                                    duration: const Duration(milliseconds: 150),
+                                    curve: Curves.easeOut,
+                                    child: typing
+                                        ? const SizedBox.shrink()
+                                        : Padding(
+                                            padding: const EdgeInsets.only(
+                                              right: 6,
+                                            ),
+                                            child: _ComposerIconButton(
+                                              icon: Icons.add_rounded,
+                                              onPressed: () =>
+                                                  _openAttachmentSheet(
+                                                    controller,
+                                                  ),
+                                            ),
                                           ),
-                                      hintStyle: TextStyle(
-                                        fontFamily:
-                                            _appearance.messageFontFamily,
-                                        fontSize: 12,
-                                        color: _appearance.messageTextColor
-                                            .withAlpha(170),
+                                  );
+                                },
+                              ),
+                              _ComposerIconButton(
+                                icon: Icons.emoji_emotions_outlined,
+                                active: _showEmojiPickerPanel,
+                                onPressed: () {
+                                  FocusScope.of(context).unfocus();
+                                  setState(() {
+                                    _showEmojiPickerPanel =
+                                        !_showEmojiPickerPanel;
+                                  });
+                                },
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Container(
+                                  constraints: const BoxConstraints(
+                                    minHeight: _ComposerIconButton.size,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: 0.05),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color: composerFocused
+                                          ? const Color(
+                                              0xFF38BDF8,
+                                            ).withValues(alpha: 0.5)
+                                          : Colors.white.withValues(
+                                              alpha: 0.08,
+                                            ),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      Expanded(
+                                        child: TextField(
+                                          controller: _composerController,
+                                          focusNode: _composerFocusNode,
+                                          minLines: 1,
+                                          maxLines: 5,
+                                          textAlignVertical:
+                                              TextAlignVertical.center,
+                                          keyboardType: TextInputType.multiline,
+                                          textCapitalization:
+                                              TextCapitalization.sentences,
+                                          cursorColor: const Color(0xFF38BDF8),
+                                          style: TextStyle(
+                                            fontFamily:
+                                                _appearance.messageFontFamily,
+                                            fontSize: 14,
+                                            height: 1.35,
+                                            color: const Color(0xFFF1F5F9),
+                                          ),
+                                          decoration: InputDecoration(
+                                            hintText: _editTargetMessage != null
+                                                ? 'Edit message...'
+                                                : 'Message...',
+                                            isDense: true,
+                                            filled: false,
+                                            border: InputBorder.none,
+                                            enabledBorder: InputBorder.none,
+                                            focusedBorder: InputBorder.none,
+                                            contentPadding:
+                                                const EdgeInsets.symmetric(
+                                                  horizontal: 10,
+                                                  vertical: 9,
+                                                ),
+                                            hintStyle: TextStyle(
+                                              fontFamily:
+                                                  _appearance.messageFontFamily,
+                                              fontSize: 14,
+                                              color: const Color(0xFF64748B),
+                                            ),
+                                          ),
+                                          onChanged: (value) {
+                                            _onComposerChanged(
+                                              controller,
+                                              value,
+                                            );
+                                          },
+                                        ),
                                       ),
-                                    ),
-                                    onChanged: (value) {
-                                      _onComposerChanged(controller, value);
-                                    },
+                                    ],
                                   ),
                                 ),
-                                SizedBox(
-                                  width: 38,
-                                  child: IconButton(
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(
-                                      minWidth: 32,
-                                      minHeight: 32,
-                                    ),
-                                    visualDensity: VisualDensity.compact,
-                                    onPressed: () =>
-                                        _openVoiceRecorderDialog(controller),
-                                    icon: const Icon(
-                                      Icons.mic_none_rounded,
-                                      size: 20,
-                                      color:
-                                          PlayerUiSignalTheme.primaryDarkColor,
-                                    ),
-                                  ),
-                                ),
-                                SizedBox(
-                                  width: 38,
-                                  child: IconButton(
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(
-                                      minWidth: 32,
-                                      minHeight: 32,
-                                    ),
-                                    visualDensity: VisualDensity.compact,
-                                    onPressed: () async {
-                                      final text = _composerController.text;
-                                      final editTarget = _editTargetMessage;
-                                      _composerController.clear();
-                                      _stopTyping(controller);
-                                      if (editTarget != null) {
-                                        setState(() {
-                                          _editTargetMessage = null;
-                                        });
-                                        await controller.editMessage(
-                                          eventId: editTarget.id,
-                                          updatedText: text,
-                                        );
-                                      } else {
-                                        await controller.sendText(text);
-                                      }
-                                    },
-                                    icon: const Icon(
-                                      Icons.send,
-                                      size: 20,
-                                      color:
-                                          PlayerUiSignalTheme.primaryDarkColor,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
+                              ),
+                              const SizedBox(width: 6),
+                              // Right-hand slot, outside the text box: the mic while empty,
+                              // send once there's text (a check when editing), in the user's
+                              // bubble colour.
+                              ValueListenableBuilder<TextEditingValue>(
+                                valueListenable: _composerController,
+                                builder: (context, value, _) {
+                                  final editing = _editTargetMessage != null;
+                                  if (value.text.isEmpty && !editing) {
+                                    return Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        _ComposerIconButton(
+                                          icon: Icons.photo_camera_outlined,
+                                          onPressed: () =>
+                                              _openCameraCapture(controller),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        _ComposerIconButton(
+                                          icon: Icons.mic_rounded,
+                                          onPressed: () =>
+                                              _openVoiceRecorderDialog(
+                                                controller,
+                                              ),
+                                        ),
+                                      ],
+                                    );
+                                  }
+                                  return _ComposerIconButton(
+                                    icon: editing
+                                        ? Icons.check_rounded
+                                        : Icons.send_rounded,
+                                    fillColor: _appearance.myBubbleColor,
+                                    iconColor: Colors.white,
+                                    onPressed: value.text.trim().isEmpty
+                                        ? null
+                                        : () async {
+                                            final text =
+                                                _composerController.text;
+                                            final editTarget =
+                                                _editTargetMessage;
+                                            _composerController.clear();
+                                            _stopTyping(controller);
+                                            if (editTarget != null) {
+                                              setState(() {
+                                                _editTargetMessage = null;
+                                              });
+                                              await controller.editMessage(
+                                                eventId: editTarget.id,
+                                                updatedText: text,
+                                              );
+                                            } else {
+                                              await controller.sendText(text);
+                                            }
+                                          },
+                                  );
+                                },
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -4376,9 +4941,12 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Preview + caption step before sending photos, or a camera video when [videoPath] is set.
+  /// Returns the caption, or null if cancelled.
   Future<String?> _showImageBatchComposerSheet(
     BuildContext context, {
-    required List<PickedImageMedia> images,
+    List<PickedImageMedia> images = const [],
+    String? videoPath,
   }) async {
     return showModalBottomSheet<String>(
       context: context,
@@ -4386,7 +4954,10 @@ class _ChatScreenState extends State<ChatScreen> {
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => _ImageBatchComposerSheet(
         images: images,
+        videoPath: videoPath,
         initialCaption: _composerController.text.trim(),
+        sendColor: _appearance.myBubbleColor,
+        fontFamily: _appearance.messageFontFamily,
       ),
     );
   }
@@ -4482,6 +5053,99 @@ class _ChatScreenState extends State<ChatScreen> {
     if (sent && mounted) {
       _composerController.clear();
       _stopTyping(controller);
+    }
+  }
+
+  /// The composer's camera button: take a photo or record a video and send it to the room.
+  Future<void> _openCameraCapture(ChatController controller) async {
+    FocusScope.of(context).unfocus();
+    final action = await showModalBottomSheet<_CameraCaptureAction>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => _CameraCaptureSheet(
+        onSelect: (value) => Navigator.of(sheetContext).pop(value),
+      ),
+    );
+    if (!mounted || action == null) return;
+
+    final picker = ImagePicker();
+    try {
+      if (action == _CameraCaptureAction.photo) {
+        final photo = await picker.pickImage(
+          source: ImageSource.camera,
+          imageQuality: 84,
+          maxWidth: 1920,
+          maxHeight: 1920,
+        );
+        if (photo == null || !mounted) return;
+        final images = [
+          PickedImageMedia(
+            bytes: await photo.readAsBytes(),
+            filename: photo.name.isNotEmpty ? photo.name : 'photo.jpg',
+          ),
+        ];
+        if (!mounted) return;
+        // Same preview + caption step as photos picked from the gallery.
+        final caption = await _showImageBatchComposerSheet(
+          context,
+          images: images,
+        );
+        if (caption == null || !mounted) return;
+        final sent = await controller.sendPickedImages(
+          images: images,
+          caption: caption,
+        );
+        if (!mounted) return;
+        if (!sent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not send photo. Please try again.')),
+          );
+          return;
+        }
+      } else {
+        final video = await picker.pickVideo(
+          source: ImageSource.camera,
+          maxDuration: const Duration(minutes: 2),
+        );
+        if (video == null || !mounted) return;
+        // Same preview + caption step as photos.
+        final caption = await _showImageBatchComposerSheet(
+          context,
+          videoPath: video.path,
+        );
+        if (caption == null || !mounted) return;
+        final messenger = ScaffoldMessenger.of(context);
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Sending video...'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        final sent = await controller.sendCapturedVideo(
+          path: video.path,
+          caption: caption.trim().isEmpty ? null : caption.trim(),
+        );
+        if (!mounted) return;
+        if (!sent) {
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Could not send video. Please try again.')),
+          );
+          return;
+        }
+      }
+      _composerController.clear();
+      _stopTyping(controller);
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.code == 'camera_access_denied'
+                ? 'Camera access is turned off for ClubOrbit. Allow it in your phone settings.'
+                : 'Could not open the camera.',
+          ),
+        ),
+      );
     }
   }
 
@@ -4599,6 +5263,58 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // Emoji picker is rendered inline at the bottom of the screen so chat and
   // composer stay visible above it while selecting emojis.
+}
+
+/// A cluborbit-web style composer button: a small rounded square with a faint fill and border
+/// (or a solid fill, for send), matching ChatWindow.jsx's 32px buttons at a touch-friendly size.
+class _ComposerIconButton extends StatelessWidget {
+  const _ComposerIconButton({
+    required this.icon,
+    required this.onPressed,
+    this.fillColor,
+    this.iconColor,
+    this.active = false,
+  });
+
+  static const double size = 38;
+
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final Color? fillColor;
+  final Color? iconColor;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final solid = fillColor != null;
+    return Opacity(
+      opacity: onPressed == null ? 0.5 : 1,
+      child: Material(
+        color: solid
+            ? fillColor
+            : Colors.white.withValues(alpha: active ? 0.12 : 0.05),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: solid
+              ? BorderSide.none
+              : BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onPressed,
+          child: SizedBox(
+            width: size,
+            height: size,
+            child: Icon(
+              icon,
+              size: 20,
+              color: iconColor ?? const Color(0xFF94A3B8),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _VoiceRecordingPayload {

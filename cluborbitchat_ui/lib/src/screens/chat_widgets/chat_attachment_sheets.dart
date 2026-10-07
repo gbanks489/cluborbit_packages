@@ -88,6 +88,40 @@ class _PictureSourceSheet extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
+// _CameraCaptureSheet – photo vs video from the composer's camera button
+// ---------------------------------------------------------------------------
+
+class _CameraCaptureSheet extends StatelessWidget {
+  const _CameraCaptureSheet({required this.onSelect});
+
+  final ValueChanged<_CameraCaptureAction> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AttachmentSheetFrame(
+      title: 'Camera',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _AttachmentOptionTile(
+            icon: Icons.photo_camera_outlined,
+            title: 'Take photo',
+            subtitle: 'Take a picture and send it',
+            onTap: () => onSelect(_CameraCaptureAction.photo),
+          ),
+          _AttachmentOptionTile(
+            icon: Icons.videocam_outlined,
+            title: 'Record video',
+            subtitle: 'Record up to 2 minutes and send it',
+            onTap: () => onSelect(_CameraCaptureAction.video),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // _AttachmentSheetFrame – shared rounded bottom-sheet container
 // ---------------------------------------------------------------------------
 
@@ -99,41 +133,47 @@ class _AttachmentSheetFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // A Material (not a coloured Container) so the ListTiles inside draw their ink splashes on
+    // it - a decorated box in between hid them and tripped Flutter's "ListTile background color
+    // or ink splashes may be invisible" assertion.
     return SafeArea(
       top: false,
-      child: Container(
-        decoration: const BoxDecoration(
-          color: PlayerUiSignalTheme.secondaryColor,
+      child: Material(
+        color: PlayerUiSignalTheme.secondaryColor,
+        shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 44,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(999),
-              ),
-            ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  fontFamily: 'Poppins',
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 44,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(999),
                 ),
               ),
-            ),
-            const SizedBox(height: 10),
-            child,
-          ],
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    fontFamily: 'Poppins',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              child,
+            ],
+          ),
         ),
       ),
     );
@@ -403,126 +443,133 @@ class _LocationAttachmentSheetState extends State<_LocationAttachmentSheet> {
         minChildSize: 0.50,
         maxChildSize: 0.95,
         expand: false,
-        builder: (_, scrollController) => Container(
-          decoration: const BoxDecoration(
-            color: PlayerUiSignalTheme.secondaryColor,
+        // Material rather than a coloured Container, for the same ink-splash reason as above.
+        builder: (_, scrollController) => Material(
+          color: PlayerUiSignalTheme.secondaryColor,
+          shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
           ),
-          padding: EdgeInsets.fromLTRB(16, 12, 16, bottomPad),
-          child: SingleChildScrollView(
-            controller: scrollController,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // drag handle
-                Container(
-                  width: 44,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.white24,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Send location',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      fontFamily: 'Poppins',
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(16, 12, 16, bottomPad),
+            child: SingleChildScrollView(
+              controller: scrollController,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // drag handle
+                  Container(
+                    width: 44,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(999),
                     ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                // Optional place name
-                _AttachmentInput(
-                  controller: _titleController,
-                  label: 'Place name (optional)',
-                  hint: 'Coffee shop, venue, park...',
-                ),
-                const SizedBox(height: 10),
-                if (_locationError != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
+                  const Align(
+                    alignment: Alignment.centerLeft,
                     child: Text(
-                      _locationError!,
-                      style: const TextStyle(
-                        color: Colors.redAccent,
-                        fontSize: 12,
+                      'Send location',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        fontFamily: 'Poppins',
                       ),
                     ),
                   ),
-                // Map
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: SizedBox(
-                    height: 280,
-                    child: Stack(
-                      children: [
-                        FlutterMap(
-                          mapController: _mapController,
-                          options: MapOptions(
-                            initialCenter: initialCenter,
-                            initialZoom: _pickedLocation != null ? 15 : 12,
-                            onTap: (tapPosition, point) {
-                              setState(() => _pickedLocation = point);
-                              _mapController.move(
-                                point,
-                                _mapController.camera.zoom,
-                              );
-                            },
-                          ),
-                          children: [
-                            TileLayer(
-                              urlTemplate:
-                                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                              userAgentPackageName: 'com.example.playerchat',
-                            ),
-                            if (_pickedLocation != null)
-                              MarkerLayer(
-                                markers: [
-                                  Marker(
-                                    point: _pickedLocation!,
-                                    width: 40,
-                                    height: 40,
-                                    child: const Icon(
-                                      Icons.location_pin,
-                                      color: Colors.red,
-                                      size: 40,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                          ],
+                  const SizedBox(height: 10),
+                  // Optional place name
+                  _AttachmentInput(
+                    controller: _titleController,
+                    label: 'Place name (optional)',
+                    hint: 'Coffee shop, venue, park...',
+                  ),
+                  const SizedBox(height: 10),
+                  if (_locationError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        _locationError!,
+                        style: const TextStyle(
+                          color: Colors.redAccent,
+                          fontSize: 12,
                         ),
-                        if (_loadingLocation)
-                          const Center(
-                            child: CircularProgressIndicator(
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                Colors.white,
+                      ),
+                    ),
+                  // Map
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: SizedBox(
+                      height: 280,
+                      child: Stack(
+                        children: [
+                          FlutterMap(
+                            mapController: _mapController,
+                            options: MapOptions(
+                              initialCenter: initialCenter,
+                              initialZoom: _pickedLocation != null ? 15 : 12,
+                              onTap: (tapPosition, point) {
+                                setState(() => _pickedLocation = point);
+                                _mapController.move(
+                                  point,
+                                  _mapController.camera.zoom,
+                                );
+                              },
+                            ),
+                            children: [
+                              TileLayer(
+                                urlTemplate:
+                                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                userAgentPackageName: 'com.example.playerchat',
+                              ),
+                              if (_pickedLocation != null)
+                                MarkerLayer(
+                                  markers: [
+                                    Marker(
+                                      point: _pickedLocation!,
+                                      width: 40,
+                                      height: 40,
+                                      child: const Icon(
+                                        Icons.location_pin,
+                                        color: Colors.red,
+                                        size: 40,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                            ],
+                          ),
+                          if (_loadingLocation)
+                            const Center(
+                              child: CircularProgressIndicator(
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.white,
+                                ),
                               ),
                             ),
-                          ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    _pickedLocation != null
-                        ? '${_pickedLocation!.latitude.toStringAsFixed(5)}, '
-                              '${_pickedLocation!.longitude.toStringAsFixed(5)}  •  Tap map to move pin'
-                        : 'Tap the map to place a pin',
-                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      _pickedLocation != null
+                          ? '${_pickedLocation!.latitude.toStringAsFixed(5)}, '
+                                '${_pickedLocation!.longitude.toStringAsFixed(5)}  •  Tap map to move pin'
+                          : 'Tap the map to place a pin',
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 11,
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 12),
-                _AttachmentFormActionRow(onSend: _submit),
-              ],
+                  const SizedBox(height: 12),
+                  _AttachmentFormActionRow(onSend: _submit),
+                ],
+              ),
             ),
           ),
         ),

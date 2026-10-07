@@ -559,13 +559,13 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                       Icon(
                         Icons.open_in_new_rounded,
                         size: 18,
-                        color: Color(0xFF0C1D36),
+                        color: Color(0xFF0B1224),
                       ),
                       SizedBox(height: 2),
                       Text(
                         'Open',
                         style: TextStyle(
-                          color: Color(0xFF0C1D36),
+                          color: Color(0xFF0B1224),
                           fontFamily: 'Poppins',
                           fontSize: 11,
                           fontWeight: FontWeight.w700,

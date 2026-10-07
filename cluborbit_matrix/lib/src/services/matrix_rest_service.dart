@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -6,8 +7,12 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:cluborbit_models/cluborbit_models.dart';
 
 import '../config/playerchat_config.dart';
-import '../matrix_core/matrix_rust_crypto_transport_client.dart';
+import '../matrix_core/encrypted_attachment.dart';
+import '../matrix_core/matrix_crypto_service.dart';
+import '../matrix_core/matrix_low_level_client.dart';
 import '../matrix_core/matrix_transport_client.dart';
+import '../matrix_core/native/lib.dart' as native;
+import 'background_notification_decryptor.dart';
 import 'matrix_rest_cache_store.dart';
 
 class MatrixCredentials {
@@ -124,6 +129,11 @@ class MatrixRestService {
   }) : _homeserver = homeserver.endsWith('/')
            ? homeserver.substring(0, homeserver.length - 1)
            : homeserver,
+       // MatrixLowLevelClient directly, not the old MatrixRustCryptoTransportClient — that was a
+       // method-channel stub for a native plugin that was never built (isAvailable always false),
+       // so it always fell through to this same low-level client anyway. Real crypto now comes
+       // from cluborbit_matrix_native (flutter_rust_bridge, not a method channel), driven by
+       // MatrixCryptoService below rather than the transport layer itself.
        _core =
            transportFactory?.call(
              homeserver: homeserver.endsWith('/')
@@ -131,12 +141,18 @@ class MatrixRestService {
                  : homeserver,
              clientName: clientName,
            ) ??
-           MatrixRustCryptoTransportClient(
+           MatrixLowLevelClient(
              homeserver: homeserver.endsWith('/')
                  ? homeserver.substring(0, homeserver.length - 1)
                  : homeserver,
-             clientName: clientName,
-           );
+           ) {
+    // Crypto only wires up when _core is actually a MatrixLowLevelClient (true by default; a
+    // custom transportFactory — used in tests — opts out gracefully rather than breaking).
+    final core = _core;
+    if (core is MatrixLowLevelClient) {
+      _cryptoService = MatrixCryptoService(core);
+    }
+  }
 
   final String _homeserver;
   final String clientName;
@@ -146,6 +162,13 @@ class MatrixRestService {
   String get homeserver => _homeserver;
   final MatrixDatabaseBuilder? databaseBuilder;
   final MatrixTransportFactory? transportFactory;
+  MatrixCryptoService? _cryptoService;
+  Completer<void> _cryptoInitDone = Completer<void>();
+  // /sync responses that arrived while the crypto store was still opening. Their to-device events
+  // (room keys) must reach the crypto engine in order, so they're replayed once it's ready.
+  final List<Map<String, dynamic>> _pendingCryptoSyncs =
+      <Map<String, dynamic>>[];
+  bool _sawUndecryptedBeforeCrypto = false;
 
   static const String _forwardedPrefix = '[Forwarded]\n';
 
@@ -166,6 +189,10 @@ class MatrixRestService {
   final Map<String, List<ChatParticipant>> _participantsCache =
       <String, List<ChatParticipant>>{};
   final Map<String, DateTime> _participantsCacheAt = <String, DateTime>{};
+  // When each room's state was last fetched to fill in a missing name/avatar after an
+  // incremental sync - limits that to once per 30s per room (a room with genuinely no name
+  // would otherwise be re-fetched on every sync).
+  final Map<String, DateTime> _roomStateBackfillAt = <String, DateTime>{};
   final Map<String, List<ChatParticipant>> _userSearchCache =
       <String, List<ChatParticipant>>{};
   final Map<String, ChatUserPresence> _presenceCache =
@@ -287,6 +314,105 @@ class MatrixRestService {
     return null;
   }
 
+  String? cachedRoomTitle(String roomId) {
+    final normalizedRoomId = roomId.trim();
+    for (final thread in _cachedThreads) {
+      if (thread.id == normalizedRoomId) {
+        final title = thread.title.trim();
+        return title.isEmpty ? null : title;
+      }
+    }
+    return null;
+  }
+
+  String? cachedParticipantDisplayName(String roomId, String userId) =>
+      _displayNameForRoomUser(roomId.trim(), userId.trim());
+
+  /// Fetches (and decrypts, when crypto is ready) the event a push notification points at, for
+  /// event_id_only pushes that carry no message text. Returns null when it can't be resolved.
+  Future<String?> resolveNotificationBody(String roomId, String eventId) async {
+    // The push can beat the /sync that delivers this message's room key, so if decryption isn't
+    // possible yet, pull a sync (which feeds to-device keys to the crypto engine) and retry.
+    // Right after launch, crypto init (store open, 4S restore, key-backup import) may still be
+    // running; wait for it rather than burning retries.
+    if (_cryptoService?.isReady != true && !_cryptoInitDone.isCompleted) {
+      debugPrint(
+        '[push] crypto not ready yet, waiting for startup login + crypto init',
+      );
+      try {
+        await _cryptoInitDone.future.timeout(const Duration(seconds: 20));
+      } catch (_) {}
+    }
+    if (!_core.isLoggedIn) {
+      debugPrint(
+        '[push] not logged in to Matrix, skipping notification body lookup',
+      );
+      return null;
+    }
+    const maxAttempts = 4;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        // Fetch the real event (not a synthetic one built from the push): the crypto engine records
+        // each decrypted message's event id + timestamp for replay detection, so decrypting with a
+        // made-up timestamp would make the later timeline decrypt of this message fail.
+        final raw = await _core.getEvent(roomId, eventId);
+        final event = await _decryptEventIfNeeded(roomId, _asMap(raw));
+        if ((event['type'] ?? '').toString() != 'm.room.encrypted') {
+          return _notificationTextFor(_asMap(event['content']));
+        }
+        debugPrint(
+          '[push] attempt $attempt: $eventId still encrypted (crypto ready=${_cryptoService?.isReady})',
+        );
+      } catch (e) {
+        debugPrint('[push] attempt $attempt: could not resolve $eventId: $e');
+      }
+      if (attempt == maxAttempts) break;
+      try {
+        await _refreshSync(fullState: false);
+      } catch (_) {}
+      await Future<void>.delayed(Duration(milliseconds: 600 * attempt));
+    }
+    return null;
+  }
+
+  /// Notification text for a decrypted message's content ("📷 Sent you an image", or the text
+  /// itself without any reply quote). Shared with BackgroundNotificationDecryptor.
+  static String? notificationTextForContent(Map<String, dynamic> content) =>
+      _notificationTextFor(content);
+
+  static String? _notificationTextFor(Map<String, dynamic> content) {
+    // For media, "body" is just the file name, so describe what was sent instead.
+    final msgType = (content['msgtype'] ?? '').toString();
+    final caption = (content['org.cluborbit.caption'] ?? '').toString().trim();
+    final mime = (_asMap(content['info'])['mimetype'] ?? '').toString();
+    final filename = (content['filename'] ?? content['body'] ?? '').toString();
+    String withCaption(String base) =>
+        caption.isEmpty ? base : '$base: $caption';
+    switch (msgType) {
+      case 'm.image':
+        return withCaption('📷 Sent you an image');
+      case galleryMsgType:
+        final count = content['images'] is List
+            ? (content['images'] as List).length
+            : 0;
+        return withCaption(
+          count > 1 ? '📷 Sent you $count images' : '📷 Sent you an image',
+        );
+      case 'm.video':
+        return withCaption('🎥 Sent you a video');
+      case 'm.audio':
+        return 'Sent a voice message';
+      case 'm.location':
+        return 'Shared a location';
+      case 'm.file':
+        return _isAudioFile(mimeType: mime, filename: filename)
+            ? 'Sent a voice message'
+            : withCaption('Sent a file');
+    }
+    final body = _stripReplyFallback((content['body'] ?? '').toString());
+    return body.isEmpty ? null : body;
+  }
+
   String? cachedParticipantAvatarUrl(String roomId, String userId) {
     final normalizedRoomId = roomId.trim();
     final normalizedUserId = userId.trim();
@@ -309,6 +435,10 @@ class MatrixRestService {
   }
 
   bool get isLoggedIn => _initialized && _core.isLoggedIn;
+
+  /// The live session's access token - used to hand notification rendering (which runs natively
+  /// and can't reach this client) the credentials it needs for avatars and inline replies.
+  String? get accessToken => _initialized ? _core.currentAccessToken : null;
   String? get currentUserId => _initialized ? _core.currentUserId : null;
 
   Future<void> initialize() async {
@@ -317,21 +447,208 @@ class MatrixRestService {
     _initialized = true;
   }
 
+  /// The single path every poll of `/sync` should go through — feeds the raw response to the
+  /// crypto engine (to-device events, device-list changes, one-time-key counts) right after
+  /// fetching it, so device keys stay uploaded and incoming to-device traffic (room-key shares,
+  /// verification requests) is never missed. A no-op when crypto isn't wired up (e.g. a test
+  /// double supplied via transportFactory).
+  Future<Map<String, dynamic>> _syncWithCrypto({
+    required int timeoutMs,
+    required bool fullState,
+  }) async {
+    final sync = await _core.sync(timeoutMs: timeoutMs, fullState: fullState);
+    final crypto = _cryptoService;
+    if (crypto != null) {
+      if (!_cryptoInitDone.isCompleted) {
+        _pendingCryptoSyncs.add(sync);
+      } else {
+        try {
+          await crypto.processSyncResponse(sync);
+        } catch (_) {
+          // Best-effort — a crypto processing failure shouldn't block the rest of the sync pipeline.
+        }
+      }
+    }
+    return sync;
+  }
+
+  final Map<String, bool> _roomEncryptedCache = {};
+
+  /// Whether a room has `m.room.encryption` state — cached per room for the life of this
+  /// service, since Matrix rooms never go from encrypted back to unencrypted once enabled.
+  Future<bool> _isRoomEncrypted(String roomId) async {
+    final cached = _roomEncryptedCache[roomId];
+    if (cached != null) return cached;
+    bool isEncrypted;
+    try {
+      isEncrypted = (await getRoomEncryptionStatus(roomId)).isEncrypted;
+    } catch (_) {
+      isEncrypted = false;
+    }
+    _roomEncryptedCache[roomId] = isEncrypted;
+    return isEncrypted;
+  }
+
+  /// Sends a single room event, Megolm-encrypting it first when the room is encrypted and the
+  /// crypto engine is ready — otherwise sends the plaintext content as-is (unencrypted rooms, or
+  /// before this device's crypto session has finished initializing). Replaces direct use of
+  /// `_core.sendText`/`_core.sendMediaMessage` (which only ever produce `m.room.message`) so an
+  /// `m.room.encrypted` envelope can be sent instead when needed.
+  Future<String> _sendRoomEvent({
+    required String roomId,
+    required String eventType,
+    required Map<String, dynamic> content,
+  }) async {
+    final cryptoService = _cryptoService;
+    if (cryptoService != null &&
+        cryptoService.isReady &&
+        await _isRoomEncrypted(roomId)) {
+      try {
+        final participants = await getRoomParticipants(roomId);
+        final memberUserIds = participants
+            .map((p) => p.userId)
+            .toList(growable: false);
+        await cryptoService.prepareRoomForEncryption(roomId, memberUserIds);
+        final encryptedContent = await cryptoService.encryptRoomEvent(
+          roomId: roomId,
+          eventType: eventType,
+          content: content,
+        );
+        return _core.sendCallEvent(
+          roomId: roomId,
+          eventType: 'm.room.encrypted',
+          content: encryptedContent,
+        );
+      } catch (e) {
+        // Falls through to a plaintext send — better a readable message than none at all if the
+        // crypto engine can't currently encrypt for this room (e.g. mid-initialization).
+        debugPrint(
+          '[crypto] encrypt failed for $roomId, sending plaintext instead: $e',
+        );
+      }
+    }
+    return _core.sendCallEvent(
+      roomId: roomId,
+      eventType: eventType,
+      content: content,
+    );
+  }
+
+  /// Decrypts a single raw timeline/history event if it's `m.room.encrypted`, returning a map
+  /// shaped like the plaintext event it wraps (same event_id/sender/origin_server_ts/unsigned,
+  /// but with the decrypted type/content) so every existing `m.room.message`-shaped parser
+  /// downstream keeps working unchanged. Non-encrypted events, and any that fail to decrypt
+  /// (crypto not ready yet, key not received yet), are returned unchanged.
+  Future<Map<String, dynamic>> _decryptEventIfNeeded(
+    String roomId,
+    Map<String, dynamic> event,
+  ) async {
+    final cryptoService = _cryptoService;
+    if (cryptoService == null ||
+        !cryptoService.isReady ||
+        (event['type'] ?? '').toString() != 'm.room.encrypted') {
+      return event;
+    }
+    try {
+      final decrypted = await cryptoService.decryptRoomEvent(
+        roomId: roomId,
+        event: event,
+      );
+      return <String, dynamic>{
+        ...event,
+        'type': decrypted['type'],
+        'content': decrypted['content'],
+      };
+    } catch (e) {
+      debugPrint(
+        '[crypto] decrypt failed for ${event['event_id']} in $roomId, dropping: $e',
+      );
+      return event;
+    }
+  }
+
+  /// Decrypts every `m.room.encrypted` event in a `/messages` (or `/sync`) chunk in place —
+  /// the single choke point every room-history/timeline read should pass its raw events through.
+  Future<List<dynamic>> _decryptChunk(
+    String roomId,
+    List<dynamic> chunk,
+  ) async {
+    if (_cryptoService?.isReady != true) {
+      final encryptedCount = chunk
+          .where(
+            (e) => (_asMap(e)['type'] ?? '').toString() == 'm.room.encrypted',
+          )
+          .length;
+      if (encryptedCount > 0) {
+        _sawUndecryptedBeforeCrypto = true;
+        debugPrint(
+          '[crypto] crypto not ready — $encryptedCount encrypted event(s) in $roomId left undecrypted',
+        );
+      }
+      return chunk;
+    }
+    final decrypted = <dynamic>[];
+    for (final event in chunk) {
+      decrypted.add(await _decryptEventIfNeeded(roomId, _asMap(event)));
+    }
+    return decrypted;
+  }
+
   Future<MatrixCredentials> loginWithPassword({
     required String username,
     required String password,
   }) async {
     await initialize();
 
+    // Reuse this account's device ID across logins: the crypto store is bound to one device, so
+    // a fresh device on every launch would make the store unopenable (and pile up dead devices).
+    final deviceIdKey = 'matrix_device_id:${username.toLowerCase()}';
+    String? savedDeviceId;
+    SharedPreferences? prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+      savedDeviceId = prefs.getString(deviceIdKey);
+    } catch (_) {}
+    if (savedDeviceId != null &&
+        _cryptoService != null &&
+        !await MatrixCryptoService.hasStoreForUser(username)) {
+      // No crypto store to go with the saved device — see hasStoreForUser: re-keying that device
+      // would stop other clients from ever decrypting what this one sends. Use a new device.
+      debugPrint(
+        '[crypto] no crypto store for saved device $savedDeviceId; logging in as a new device',
+      );
+      savedDeviceId = null;
+    }
     final result = await _core.loginPassword(
       username: username,
       password: password,
       initialDeviceDisplayName: 'ClubOrbit Chat',
+      deviceId: savedDeviceId,
     );
+    final loggedInDeviceId = result.deviceId;
+    if (prefs != null &&
+        loggedInDeviceId != null &&
+        loggedInDeviceId.isNotEmpty) {
+      unawaited(prefs.setString(deviceIdKey, loggedInDeviceId));
+    }
 
     _cachedUserId = result.userId;
     _didServeCachedThreads = false;
     await _hydrateCache(result.userId);
+
+    // Crypto init (open the store, restore 4S secrets, import the key backup) is slow, so it runs in
+    // the background instead of holding up login and the chat list. /sync responses that arrive
+    // meanwhile are queued and replayed in order once it finishes (see _syncWithCrypto).
+    if (_cryptoInitDone.isCompleted) _cryptoInitDone = Completer<void>();
+    _pendingCryptoSyncs.clear();
+    _sawUndecryptedBeforeCrypto = false;
+    unawaited(
+      _initializeCryptoInBackground(
+        password,
+        username: username,
+        deviceIdKey: deviceIdKey,
+      ),
+    );
 
     _startSyncLoop();
     unawaited(_refreshSync(fullState: false));
@@ -343,7 +660,110 @@ class MatrixRestService {
     );
   }
 
+  Future<void> _initializeCryptoInBackground(
+    String password, {
+    required String username,
+    required String deviceIdKey,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    final crypto = _cryptoService;
+    try {
+      await crypto?.initialize(passphrase: password);
+      debugPrint(
+        '[crypto] initialize() finished in ${stopwatch.elapsedMilliseconds} ms, isReady=${crypto?.isReady}',
+      );
+      if (crypto != null &&
+          crypto.isReady &&
+          await _hasMismatchedDeviceKeys(crypto)) {
+        // Other clients will never accept this device's current keys (see hasStoreForUser), so
+        // replace it with a new device and a fresh store. The old device's token stays valid until
+        // then, so the sync loop keeps running; syncs meanwhile are queued as usual.
+        debugPrint(
+          "[crypto] device ${_coreDeviceId()} identity keys differ from the server's; replacing with a new device",
+        );
+        crypto.close();
+        final result = await _core.loginPassword(
+          username: username,
+          password: password,
+          initialDeviceDisplayName: 'ClubOrbit Chat',
+        );
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final newDeviceId = result.deviceId;
+          if (newDeviceId != null && newDeviceId.isNotEmpty) {
+            await prefs.setString(deviceIdKey, newDeviceId);
+          }
+        } catch (_) {}
+        await crypto.initialize(passphrase: password);
+        debugPrint(
+          '[crypto] re-initialized on new device ${result.deviceId}, isReady=${crypto.isReady}',
+        );
+      }
+    } catch (e) {
+      // Best-effort — a crypto init failure shouldn't block login/messaging; encrypted rooms
+      // just won't decrypt.
+      debugPrint(
+        '[crypto] initialize() FAILED after ${stopwatch.elapsedMilliseconds} ms, continuing without crypto: $e',
+      );
+    }
+
+    // Replay what arrived while the store was opening, in order, so no room keys are lost. Syncs
+    // that land during this loop are picked up by it; the completer is only completed once the
+    // queue is empty (no await between that check and complete(), so nothing can slip in).
+    while (_pendingCryptoSyncs.isNotEmpty) {
+      final queued = _pendingCryptoSyncs.removeAt(0);
+      if (crypto?.isReady == true) {
+        try {
+          await crypto!.processSyncResponse(queued);
+        } catch (_) {}
+      }
+    }
+
+    // Anything decrypted (or cached) before the keys were in place is stale: drop the cached
+    // messages so rooms refetch and decrypt, and nudge listeners to do so.
+    final needsRefresh =
+        crypto?.isReady == true &&
+        (crypto!.createdFreshStore || _sawUndecryptedBeforeCrypto);
+    if (needsRefresh) _cachedMessagesByRoom.clear();
+    if (crypto?.isReady == true) {
+      // Lets a push arriving while the app is closed decrypt with this same device + store.
+      final token = _core.currentAccessToken ?? '';
+      final userId = _core.currentUserId ?? '';
+      final deviceId = _coreDeviceId() ?? '';
+      if (token.isNotEmpty && userId.isNotEmpty && deviceId.isNotEmpty) {
+        unawaited(
+          BackgroundNotificationDecryptor.saveSession(
+            homeserver: _homeserver,
+            accessToken: token,
+            userId: userId,
+            deviceId: deviceId,
+            passphrase: password,
+          ),
+        );
+      }
+    }
+    if (!_cryptoInitDone.isCompleted) _cryptoInitDone.complete();
+    if (needsRefresh) _emitSyncUpdate();
+  }
+
+  Future<bool> _hasMismatchedDeviceKeys(MatrixCryptoService crypto) async {
+    try {
+      return await crypto.hasMismatchedDeviceKeys().timeout(
+        const Duration(seconds: 10),
+      );
+    } catch (e) {
+      debugPrint('[crypto] device key check failed, continuing: $e');
+      return false;
+    }
+  }
+
+  String? _coreDeviceId() {
+    final core = _core;
+    return core is MatrixLowLevelClient ? core.currentDeviceId : null;
+  }
+
   Future<void> logout() async {
+    unawaited(BackgroundNotificationDecryptor.clearSession());
     if (!_initialized) return;
     _stopSyncLoop();
     await _endCallSession(clearSnapshot: true);
@@ -383,7 +803,7 @@ class MatrixRestService {
     final totalStopwatch = Stopwatch()..start();
     await initialize();
     final incrementalSyncStopwatch = Stopwatch()..start();
-    var sync = await _core.sync(timeoutMs: 0, fullState: false);
+    var sync = await _syncWithCrypto(timeoutMs: 0, fullState: false);
     _perfLog('getJoinedThreads.sync.incremental', incrementalSyncStopwatch);
     _captureTyping(sync);
 
@@ -411,7 +831,7 @@ class MatrixRestService {
         return List<ChatThread>.from(_cachedThreads);
       } else {
         final fullStateSyncStopwatch = Stopwatch()..start();
-        sync = await _core.sync(timeoutMs: 0, fullState: true);
+        sync = await _syncWithCrypto(timeoutMs: 0, fullState: true);
         _perfLog('getJoinedThreads.sync.fullState', fullStateSyncStopwatch);
         _captureTyping(sync);
         roomsData = (sync['rooms'] as Map?) ?? const <String, dynamic>{};
@@ -427,14 +847,23 @@ class MatrixRestService {
       onProgress?.call(0.72, 'Loading conversations... 0/$totalRooms');
     }
 
-    for (final entry in joined.entries) {
+    // Rooms are built a few at a time rather than strictly one after another: each may need a
+    // fallback /state or latest-message request, and on a first open (no cache) doing those
+    // sequentially for every room made the list slow to appear.
+    Future<void> buildJoinedRoom(MapEntry<dynamic, dynamic> entry) async {
       final roomId = entry.key.toString();
       final roomData = _asMap(entry.value);
-      var stateEvents = _asList(roomData['state']);
-      final timelineEvents = _asList(roomData['timeline']);
+      final timelineEvents = await _decryptChunk(
+        roomId,
+        _asList(roomData['timeline']),
+      );
+      var stateEvents = _currentRoomState(roomData, timelineEvents);
       var title = _roomTitle(roomId, stateEvents);
       var avatarUrl = _roomAvatarUrl(stateEvents);
-      if (stateEvents.isEmpty || title == roomId || avatarUrl == null) {
+      // A title that's just a user/room ID counts as missing too.
+      if (stateEvents.isEmpty ||
+          !_hasUsefulThreadTitle(title, roomId) ||
+          avatarUrl == null) {
         final fallbackStateEvents = await _loadRoomStateEvents(roomId);
         if (fallbackStateEvents.isNotEmpty) {
           fallbackStateLoads++;
@@ -526,6 +955,29 @@ class MatrixRestService {
         onProgress: onProgress,
       );
     }
+
+    const roomBuildConcurrency = 6;
+    final joinedEntries = joined.entries.toList(growable: false);
+    var nextJoinedRoom = 0;
+    Future<void> roomBuildWorker() async {
+      while (nextJoinedRoom < joinedEntries.length) {
+        final entry = joinedEntries[nextJoinedRoom++];
+        try {
+          await buildJoinedRoom(entry);
+        } catch (e) {
+          debugPrint(
+            '[MatrixRestService] building thread ${entry.key} failed: $e',
+          );
+        }
+      }
+    }
+
+    await Future.wait(
+      List<Future<void>>.generate(
+        min(roomBuildConcurrency, joinedEntries.length),
+        (_) => roomBuildWorker(),
+      ),
+    );
 
     for (final entry in invited.entries) {
       final roomId = entry.key.toString();
@@ -626,11 +1078,11 @@ class MatrixRestService {
     bool confirmedJoined = false;
     for (var attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        final sync = await _core.sync(timeoutMs: 0, fullState: true);
+        final sync = await _syncWithCrypto(timeoutMs: 0, fullState: true);
         final rooms = _asMap(sync['rooms']);
         final joined = _asMap(rooms['join']);
         final invited = _asMap(rooms['invite']);
-        _applyThreadSyncDelta(joined: joined, invited: invited);
+        await _applyThreadSyncDelta(joined: joined, invited: invited);
         await _persistCache();
         if (joined.containsKey(roomId)) {
           confirmedJoined = true;
@@ -731,7 +1183,7 @@ class MatrixRestService {
       'roomId': roomId,
       'limit': limit,
     });
-    final chunk = _asList(raw['chunk']);
+    final chunk = await _decryptChunk(roomId, _asList(raw['chunk']));
     final participantsStopwatch = Stopwatch()..start();
     final participants = await getRoomParticipants(roomId);
     _perfLog(
@@ -914,7 +1366,14 @@ class MatrixRestService {
       if (eventId.isEmpty) continue;
 
       final eventType = (event['type'] ?? '').toString();
-      final content = _asMap(event['content']);
+      final rawContent = _asMap(event['content']);
+      // A multi-image message (org.cluborbit.gallery): its first image stands in as the
+      // message's own media, so kind/URLs/encryption all work as for a single image, and the
+      // full list travels in metadata['galleryImages'] for the collage.
+      final galleryImages = _galleryImageContents(rawContent);
+      final content = galleryImages.isEmpty
+          ? rawContent
+          : _galleryPrimaryContent(rawContent, galleryImages);
       final senderId = (event['sender'] ?? '').toString();
       final senderName = _resolveSenderName(senderId, displayNamesByUserId);
 
@@ -939,6 +1398,8 @@ class MatrixRestService {
       String? replyToKind;
       String? replyToMediaUrl;
       String? replyToThumbnailUrl;
+      Map<String, dynamic>? replyToMediaEncryption;
+      Map<String, dynamic>? replyToThumbnailEncryption;
       bool replyToIsForwarded = false;
 
       if (replyToEventId != null && replyToEventId.isNotEmpty) {
@@ -962,6 +1423,8 @@ class MatrixRestService {
           replyToKind = relatedKind.name;
           replyToMediaUrl = relatedMediaUrl;
           replyToThumbnailUrl = relatedThumb;
+          replyToMediaEncryption = _mediaEncryption(relatedContent);
+          replyToThumbnailEncryption = _thumbnailEncryption(relatedContent);
           replyToIsForwarded = relatedForwarded;
         }
       }
@@ -1037,6 +1500,19 @@ class MatrixRestService {
           .toList(growable: false);
 
       final metadata = <String, dynamic>{
+        if (galleryImages.isNotEmpty)
+          'galleryImages': galleryImages
+              .map(
+                (img) => <String, dynamic>{
+                  'mediaUrl': _mediaUrl(img),
+                  'mediaEncryption': _mediaEncryption(img),
+                  'thumbnailUrl': _thumbnailUrl(img),
+                  'thumbnailEncryption': _thumbnailEncryption(img),
+                  'mimeType': _asMap(img['info'])['mimetype'],
+                  'filename': (img['body'] ?? '').toString(),
+                },
+              )
+              .toList(growable: false),
         'timelineOnly': isTimelineOnlyStateEvent,
         'timelineEventType': isCallInvite
             ? 'call_started'
@@ -1053,9 +1529,19 @@ class MatrixRestService {
         'isForwarded': forwarded,
         'mediaUrl': mediaUrl,
         'thumbnailUrl': thumbnailUrl,
+        'mediaEncryption': _mediaEncryption(content),
+        'thumbnailEncryption': _thumbnailEncryption(content),
         'mimeType': _asMap(content['info'])['mimetype'],
         'filename': filename,
         'caption': caption,
+        if ((content['msgtype'] ?? '').toString() ==
+            'm.location') ...<String, dynamic>{
+          'geoUri': (content['geo_uri'] ?? '').toString(),
+          'locationDescription':
+              (_asMap(content['org.matrix.msc3488.location'])['description'] ??
+                      '')
+                  .toString(),
+        },
         'reactions': reactionEvents
             .map((entry) => (entry['key'] ?? '').toString())
             .toList(growable: false),
@@ -1064,6 +1550,8 @@ class MatrixRestService {
         'replyToKind': replyToKind,
         'replyToMediaUrl': replyToMediaUrl,
         'replyToThumbnailUrl': replyToThumbnailUrl,
+        'replyToMediaEncryption': replyToMediaEncryption,
+        'replyToThumbnailEncryption': replyToThumbnailEncryption,
         'replyToIsForwarded': replyToIsForwarded,
         'sendStage': senderId == myUserId
             ? (readCount > 0 ? 'read' : 'delivered')
@@ -1176,10 +1664,10 @@ class MatrixRestService {
     final stopwatch = Stopwatch()..start();
     await initialize();
     final payload = isForwarded ? '$_forwardedPrefix$text' : text;
-    final eventId = await _core.sendText(
-      roomId,
-      payload,
-      replyToEventId: replyToEventId,
+    final eventId = await _sendRoomEvent(
+      roomId: roomId,
+      eventType: 'm.room.message',
+      content: _textMessageContent(payload, replyToEventId: replyToEventId),
     );
     final now = DateTime.now();
     final previewBody = _stripForwardPrefix(payload).trim();
@@ -1231,7 +1719,19 @@ class MatrixRestService {
     String? replyToBody,
     bool isForwarded = false,
   }) {
-    final createdAt = DateTime.now();
+    // Never earlier than the newest message already in the room: other messages carry server
+    // timestamps, so a device clock even slightly behind the homeserver's would sort the new
+    // message above recent ones until the server echo replaced it (it "jumped" to the bottom).
+    var createdAt = DateTime.now();
+    final roomMessages = _cachedMessagesByRoom[roomId];
+    if (roomMessages != null && roomMessages.isNotEmpty) {
+      final newest = roomMessages
+          .map((message) => message.createdAt)
+          .reduce((a, b) => a.isAfter(b) ? a : b);
+      if (!createdAt.isAfter(newest)) {
+        createdAt = newest.add(const Duration(milliseconds: 1));
+      }
+    }
     final optimistic = ChatMessage(
       id: '$_localMessagePrefix${createdAt.microsecondsSinceEpoch}',
       roomId: roomId,
@@ -1267,10 +1767,10 @@ class MatrixRestService {
   }) async {
     await initialize();
     final payload = isForwarded ? '$_forwardedPrefix$text' : text;
-    final eventId = await _core.sendText(
-      optimisticMessage.roomId,
-      payload,
-      replyToEventId: replyToEventId,
+    final eventId = await _sendRoomEvent(
+      roomId: optimisticMessage.roomId,
+      eventType: 'm.room.message',
+      content: _textMessageContent(payload, replyToEventId: replyToEventId),
     );
 
     final sentMessage = optimisticMessage.copyWith(
@@ -1313,6 +1813,26 @@ class MatrixRestService {
     }
   }
 
+  /// Display names of other people currently typing in [roomId], from the latest /sync. Synchronous
+  /// so chat-list tiles can read it while building. Empty when nobody else is typing.
+  List<String> typingNamesInRoom(String roomId) {
+    final myUserId = currentUserId;
+    final participants =
+        _participantsCache[roomId] ?? const <ChatParticipant>[];
+    return (_typingUsersByRoom[roomId] ?? const <String>{})
+        .where((id) => id != myUserId)
+        .map((id) {
+          for (final participant in participants) {
+            if (participant.userId == id) {
+              final cleaned = _sanitizeSenderLabel(participant.displayName);
+              if (cleaned.isNotEmpty) return cleaned;
+            }
+          }
+          return id;
+        })
+        .toList(growable: false);
+  }
+
   Future<List<ChatParticipant>> getTypingUsers(String roomId) async {
     await initialize();
     final myUserId = currentUserId;
@@ -1349,20 +1869,43 @@ class MatrixRestService {
     required MessageKind kind,
     String? caption,
     bool isForwarded = false,
+    // A real, separately-encrypted preview image (the spec's info.thumbnail_file) — without this,
+    // showing any preview for an encrypted video means downloading and decrypting the *entire*
+    // video just to render a chat bubble. Caller (ChatController) extracts this from the local
+    // video file before upload, since only it has an actual file to extract a frame from.
+    Uint8List? thumbnailBytes,
+    int? thumbnailWidth,
+    int? thumbnailHeight,
+    void Function(int sent, int total)? onUploadProgress,
   }) async {
     final totalStopwatch = Stopwatch()..start();
     await initialize();
 
+    // Encrypt before upload, per the Matrix spec's "Sending encrypted attachments" — the media
+    // repo only ever sees opaque ciphertext, matching cluborbit-web's own attachment encryption
+    // (see cluborbit-web's src/lib/attachmentCrypto.js; rust/src/attachment_crypto.rs here is
+    // matched byte-for-byte against it so either client can decrypt the other's uploads).
+    final encryptStopwatch = Stopwatch()..start();
+    final encrypted = await native.encryptAttachment(plaintext: bytes);
+    _perfLog('sendMediaMessage.encrypt', encryptStopwatch, <String, Object?>{
+      'roomId': roomId,
+      'bytes': bytes.length,
+    });
+
     final uploadStopwatch = Stopwatch()..start();
+    // A generic filename/mimetype for the upload itself — the real ones already travel inside
+    // the Megolm-encrypted event content (body/info.mimetype below), so they have no business
+    // being visible to the homeserver via the upload URL/Content-Disposition too.
     final mxc = await _core.uploadMedia(
-      bytes: bytes,
-      filename: filename,
-      mimeType: mimeType,
+      bytes: encrypted.ciphertext,
+      filename: 'encrypted-attachment',
+      mimeType: 'application/octet-stream',
+      onSendProgress: onUploadProgress,
     );
     _perfLog('sendMediaMessage.upload', uploadStopwatch, <String, Object?>{
       'roomId': roomId,
       'filename': filename,
-      'bytes': bytes.length,
+      'bytes': encrypted.ciphertext.length,
       'mimeType': mimeType,
     });
 
@@ -1372,14 +1915,50 @@ class MatrixRestService {
       MessageKind.emoji || MessageKind.text => 'm.file',
     };
 
-    final eventId = await _core.sendMediaMessage(
+    final fileInfo = EncryptedFileInfo(
+      url: mxc,
+      keyBase64: encrypted.keyBase64,
+      ivBase64: encrypted.ivBase64,
+      sha256Base64: encrypted.sha256Base64,
+    );
+
+    EncryptedFileInfo? thumbnailFileInfo;
+    if (thumbnailBytes != null && thumbnailBytes.isNotEmpty) {
+      try {
+        final encryptedThumb = await native.encryptAttachment(
+          plaintext: thumbnailBytes,
+        );
+        final thumbMxc = await _core.uploadMedia(
+          bytes: encryptedThumb.ciphertext,
+          filename: 'encrypted-thumbnail',
+          mimeType: 'application/octet-stream',
+        );
+        thumbnailFileInfo = EncryptedFileInfo(
+          url: thumbMxc,
+          keyBase64: encryptedThumb.keyBase64,
+          ivBase64: encryptedThumb.ivBase64,
+          sha256Base64: encryptedThumb.sha256Base64,
+        );
+      } catch (_) {
+        // Best-effort — a missing thumbnail just means the bubble falls back to whatever the
+        // renderer does without one; it shouldn't block sending the actual video.
+      }
+    }
+
+    final eventId = await _sendRoomEvent(
       roomId: roomId,
-      msgtype: msgType,
-      body: filename,
-      mxcUrl: mxc,
-      mimeType: mimeType,
-      caption: caption,
-      isForwarded: isForwarded,
+      eventType: 'm.room.message',
+      content: _mediaMessageContent(
+        msgtype: msgType,
+        body: filename,
+        file: fileInfo,
+        mimeType: mimeType,
+        caption: caption,
+        isForwarded: isForwarded,
+        thumbnailFile: thumbnailFileInfo,
+        thumbnailWidth: thumbnailWidth,
+        thumbnailHeight: thumbnailHeight,
+      ),
     );
     final now = DateTime.now();
     final normalizedCaption = (caption ?? '').trim();
@@ -1411,7 +1990,15 @@ class MatrixRestService {
         metadata: <String, dynamic>{
           'sendStage': 'sent',
           'mediaUrl': _mxcToDownloadHttp(mxc) ?? mxc,
-          'thumbnailUrl': _mxcToThumbnailHttp(mxc),
+          // No server-side thumbnail for encrypted media — the server can't resize ciphertext it
+          // can't read. Only a real, separately-uploaded encrypted thumbnail (thumbnailFileInfo,
+          // for video) counts here; otherwise renderers fall back to whatever they do without one.
+          'thumbnailUrl': thumbnailFileInfo == null
+              ? null
+              : (_mxcToDownloadHttp(thumbnailFileInfo.url) ??
+                    thumbnailFileInfo.url),
+          'mediaEncryption': fileInfo.toJson(),
+          'thumbnailEncryption': thumbnailFileInfo?.toJson(),
           'mimeType': mimeType,
           'filename': filename,
           'caption': normalizedCaption,
@@ -1425,6 +2012,28 @@ class MatrixRestService {
       'filename': filename,
     });
     return eventId;
+  }
+
+  /// Downloads and (when `encryption` is given) decrypts a message attachment — the single choke
+  /// point every media renderer should go through. `httpUrl` is a `mediaUrl`/`thumbnailUrl` from
+  /// a `ChatMessage.metadata` map (already resolved via `_mediaUrl`/`_thumbnailUrl`); `encryption`
+  /// is that same message's `metadata['mediaEncryption']` (or `replyToMediaEncryption` for a reply
+  /// preview) — null for a legacy unencrypted message, in which case the downloaded bytes are
+  /// returned as-is.
+  Future<Uint8List> resolveMediaBytes(
+    String httpUrl, {
+    Map<String, dynamic>? encryption,
+  }) async {
+    await initialize();
+    final bytes = await _core.downloadMedia(httpUrl);
+    final file = EncryptedFileInfo.fromJson(encryption);
+    if (file == null) return Uint8List.fromList(bytes);
+    return native.decryptAttachment(
+      ciphertext: bytes,
+      keyBase64: file.keyBase64,
+      ivBase64: file.ivBase64,
+      sha256Base64: file.sha256Base64,
+    );
   }
 
   Future<String> editMessage({
@@ -2341,6 +2950,168 @@ class MatrixRestService {
     );
   }
 
+  /// Mirrors the plaintext `m.room.message` payload MatrixLowLevelClient.sendText used to build
+  /// and PUT directly — now built here instead so it can be handed to `_sendRoomEvent`, which
+  /// Megolm-encrypts it first when the room is encrypted.
+  Map<String, dynamic> _textMessageContent(
+    String body, {
+    String? replyToEventId,
+  }) {
+    final content = <String, dynamic>{'msgtype': 'm.text', 'body': body};
+    if (replyToEventId != null && replyToEventId.isNotEmpty) {
+      content['m.relates_to'] = {
+        'm.in_reply_to': {'event_id': replyToEventId},
+      };
+    }
+    return content;
+  }
+
+  /// Builds an encrypted-attachment `m.room.message` payload — `content.file` (the Matrix spec's
+  /// `EncryptedFile`) instead of the plain `content.url` MatrixLowLevelClient.sendMediaMessage
+  /// used to PUT directly. See `_textMessageContent` for the equivalent text-message builder.
+  /// Custom msgtype for several images sent as one message (one m.room.message whose `images`
+  /// list holds each image's usual m.image-style content: body, file/url, info). `body` is an
+  /// "N photos" fallback for clients that don't know the type. Same format as cluborbit-web.
+  static const String galleryMsgType = 'org.cluborbit.gallery';
+
+  List<Map<String, dynamic>> _galleryImageContents(
+    Map<String, dynamic> content,
+  ) {
+    if ((content['msgtype'] ?? '').toString() != galleryMsgType)
+      return const [];
+    return ((content['images'] as List?) ?? const [])
+        .map(_asMap)
+        .where((img) => _mediaUrl(img) != null)
+        .toList(growable: false);
+  }
+
+  /// The gallery's first image as a plain m.image content, keeping the gallery's own caption,
+  /// reply relation and forwarded flag.
+  Map<String, dynamic> _galleryPrimaryContent(
+    Map<String, dynamic> content,
+    List<Map<String, dynamic>> images,
+  ) {
+    return <String, dynamic>{
+      ...images.first,
+      'msgtype': 'm.image',
+      'body': content['body'] ?? images.first['body'],
+      if (content['org.cluborbit.caption'] != null)
+        'org.cluborbit.caption': content['org.cluborbit.caption'],
+      if (content['m.relates_to'] != null)
+        'm.relates_to': content['m.relates_to'],
+      if (content['org.cluborbit.forwarded'] != null)
+        'org.cluborbit.forwarded': content['org.cluborbit.forwarded'],
+    };
+  }
+
+  /// Sends several images as one gallery message (see [galleryMsgType]): each is encrypted and
+  /// uploaded like a single image, then one event carries them all.
+  Future<String> sendImageGallery({
+    required String roomId,
+    required List<
+      ({
+        List<int> bytes,
+        String filename,
+        String mimeType,
+        int? width,
+        int? height,
+      })
+    >
+    images,
+    String? caption,
+    void Function(int fileIndex, int sent, int total)? onUploadProgress,
+  }) async {
+    await initialize();
+    if (images.isEmpty) throw ArgumentError('No images to send');
+
+    final imageContents = <Map<String, dynamic>>[];
+    for (var i = 0; i < images.length; i++) {
+      final image = images[i];
+      final encrypted = await native.encryptAttachment(plaintext: image.bytes);
+      final mxc = await _core.uploadMedia(
+        bytes: encrypted.ciphertext,
+        filename: 'encrypted-attachment',
+        mimeType: 'application/octet-stream',
+        onSendProgress: onUploadProgress == null
+            ? null
+            : (sent, total) => onUploadProgress(i, sent, total),
+      );
+      imageContents.add(<String, dynamic>{
+        'body': image.filename,
+        'file': EncryptedFileInfo(
+          url: mxc,
+          keyBase64: encrypted.keyBase64,
+          ivBase64: encrypted.ivBase64,
+          sha256Base64: encrypted.sha256Base64,
+        ).toJson(),
+        'info': <String, dynamic>{
+          'mimetype': image.mimeType,
+          'size': image.bytes.length,
+          if (image.width != null) 'w': image.width,
+          if (image.height != null) 'h': image.height,
+        },
+      });
+    }
+
+    final content = <String, dynamic>{
+      'msgtype': galleryMsgType,
+      'body': '${imageContents.length} photos',
+      'images': imageContents,
+      if ((caption ?? '').trim().isNotEmpty)
+        'org.cluborbit.caption': caption!.trim(),
+    };
+    final eventId = await _sendRoomEvent(
+      roomId: roomId,
+      eventType: 'm.room.message',
+      content: content,
+    );
+
+    final normalizedCaption = (caption ?? '').trim();
+    _updateLocalThreadPreviewAfterSend(
+      roomId: roomId,
+      previewBody: normalizedCaption.isNotEmpty
+          ? '🖼 $normalizedCaption'
+          : '📷 ${imageContents.length} photos',
+      createdAt: DateTime.now(),
+    );
+    return eventId;
+  }
+
+  Map<String, dynamic> _mediaMessageContent({
+    required String msgtype,
+    required String body,
+    required EncryptedFileInfo file,
+    required String mimeType,
+    String? caption,
+    bool isForwarded = false,
+    EncryptedFileInfo? thumbnailFile,
+    int? thumbnailWidth,
+    int? thumbnailHeight,
+  }) {
+    final info = <String, dynamic>{'mimetype': mimeType};
+    if (thumbnailFile != null) {
+      info['thumbnail_file'] = thumbnailFile.toJson();
+      info['thumbnail_info'] = <String, dynamic>{
+        'mimetype': 'image/jpeg',
+        if (thumbnailWidth != null) 'w': thumbnailWidth,
+        if (thumbnailHeight != null) 'h': thumbnailHeight,
+      };
+    }
+    final content = <String, dynamic>{
+      'msgtype': msgtype,
+      'body': body,
+      'file': file.toJson(),
+      'info': info,
+    };
+    if ((caption ?? '').trim().isNotEmpty) {
+      content['org.cluborbit.caption'] = caption!.trim();
+    }
+    if (isForwarded) {
+      content['org.cluborbit.forwarded'] = true;
+    }
+    return content;
+  }
+
   Map<String, dynamic> _encryptedRoomStateEvent() {
     return <String, dynamic>{
       'type': 'm.room.encryption',
@@ -2427,6 +3198,12 @@ class MatrixRestService {
 
     final members = await _core.getMembers(roomId);
     final chunk = _asList(members['chunk']);
+    // Roles come from the room's power levels - the member list doesn't carry them. If they can't
+    // be read, everyone simply shows as a member, as before.
+    var powerLevels = const <String, dynamic>{};
+    try {
+      powerLevels = _powerLevelsFrom(await _core.getStateEvents(roomId));
+    } catch (_) {}
 
     final out = <ChatParticipant>[];
     for (final entry in chunk) {
@@ -2443,7 +3220,7 @@ class MatrixRestService {
         ChatParticipant(
           userId: stateKey,
           displayName: displayNameRaw.isEmpty ? stateKey : displayNameRaw,
-          level: ChatMemberLevel.member,
+          level: _memberLevel(powerLevels, stateKey),
           membership: membership,
           avatarUrl: _mxcToThumbnailHttp(content['avatar_url']),
         ),
@@ -2703,7 +3480,10 @@ class MatrixRestService {
   }) async {
     final stopwatch = Stopwatch()..start();
     try {
-      final sync = await _core.sync(timeoutMs: timeoutMs, fullState: fullState);
+      final sync = await _syncWithCrypto(
+        timeoutMs: timeoutMs,
+        fullState: fullState,
+      );
       final rooms = _asMap(sync['rooms']);
       final joined = _asMap(rooms['join']);
       final invited = _asMap(rooms['invite']);
@@ -2722,7 +3502,7 @@ class MatrixRestService {
       // count changes (read receipts, push rule updates) inside joined rooms with
       // no timeline events — we still need to apply those to update badge counts.
       if (fullState || hasRoomDelta) {
-        _applyThreadSyncDelta(joined: joined, invited: invited);
+        await _applyThreadSyncDelta(joined: joined, invited: invited);
       }
       if (fullState || hasRoomDelta || hasTimelineDelta) {
         await _persistCache();
@@ -3012,7 +3792,7 @@ class MatrixRestService {
     onProgress?.call(0.05, 'Syncing rooms from server…');
 
     // Full-state sync so we don't miss any rooms.
-    final sync = await _core.sync(timeoutMs: 0, fullState: true);
+    final sync = await _syncWithCrypto(timeoutMs: 0, fullState: true);
     _captureTyping(sync);
     final roomsData = (sync['rooms'] as Map?) ?? const <String, dynamic>{};
     final joined = (roomsData['join'] as Map?) ?? const <String, dynamic>{};
@@ -3621,10 +4401,10 @@ class MatrixRestService {
     unawaited(_persistCache());
   }
 
-  void _applyThreadSyncDelta({
+  Future<void> _applyThreadSyncDelta({
     required Map<dynamic, dynamic> joined,
     required Map<dynamic, dynamic> invited,
-  }) {
+  }) async {
     if (_cachedThreads.isEmpty) {
       return;
     }
@@ -3637,12 +4417,17 @@ class MatrixRestService {
       final roomId = entry.key.toString();
       final existing = byId[roomId];
       final roomData = _asMap(entry.value);
-      final stateEvents = _asList(roomData['state']);
-      if (stateEvents.isNotEmpty) {
-        _cacheParticipantsFromStateEvents(roomId, stateEvents);
+      final syncStateEvents = _asList(roomData['state']);
+      if (syncStateEvents.isNotEmpty) {
+        _cacheParticipantsFromStateEvents(roomId, syncStateEvents);
       }
       final timelineEnvelope = _asMap(roomData['timeline']);
-      final timelineEvents = _asList(timelineEnvelope['events']);
+      final timelineEvents = await _decryptChunk(
+        roomId,
+        _asList(timelineEnvelope['events']),
+      );
+      // Includes state changes from the timeline window when this is a complete snapshot.
+      final stateEvents = _currentRoomState(roomData, timelineEvents);
 
       // Capture unread count whenever Synapse explicitly sends it in this
       // sync response. Store separately so it survives stale cache reads.
@@ -3706,6 +4491,39 @@ class MatrixRestService {
           isInvited: true,
         ),
         existing: byId[roomId],
+      );
+    }
+
+    // A room joined since the last full sync (e.g. the chat of a club, group or event just
+    // created or joined) often arrives without its name/avatar state in an incremental sync, so
+    // it showed as its raw room id until the next full sync. Fetch the state for those rooms now.
+    for (final entry in joined.entries) {
+      final roomId = entry.key.toString();
+      final thread = byId[roomId];
+      if (thread == null || _hasUsefulThreadTitle(thread.title, roomId)) continue;
+      final lastTry = _roomStateBackfillAt[roomId];
+      if (lastTry != null &&
+          DateTime.now().difference(lastTry) < const Duration(seconds: 30)) {
+        continue;
+      }
+      _roomStateBackfillAt[roomId] = DateTime.now();
+      final stateEvents = await _loadRoomStateEvents(roomId);
+      if (stateEvents.isEmpty) continue;
+      _cacheParticipantsFromStateEvents(roomId, stateEvents);
+      var title = _roomTitle(roomId, stateEvents);
+      var avatarUrl = _roomAvatarUrl(stateEvents) ?? thread.avatarUrl;
+      final isDm = _isLikelyDm(stateEvents);
+      if (isDm) {
+        final counterpart = _directMessageCounterpartForRoom(roomId, stateEvents);
+        if (counterpart != null) {
+          title = counterpart.displayName;
+          avatarUrl = counterpart.avatarUrl ?? avatarUrl;
+        }
+      }
+      byId[roomId] = thread.copyWith(
+        title: _hasUsefulThreadTitle(title, roomId) ? title : thread.title,
+        avatarUrl: avatarUrl,
+        type: isDm ? ChatType.dm : thread.type,
       );
     }
 
@@ -3869,7 +4687,7 @@ class MatrixRestService {
     return const <dynamic>[];
   }
 
-  Map<String, dynamic> _asMap(Object? value) {
+  static Map<String, dynamic> _asMap(Object? value) {
     if (value is Map<String, dynamic>) return value;
     if (value is Map) {
       return value.map((key, value) => MapEntry(key.toString(), value));
@@ -3983,6 +4801,34 @@ class MatrixRestService {
     }
   }
 
+  /// A room's current state from one /sync entry. The `state` block only holds state from
+  /// *before* the returned timeline window, so state changes inside the timeline (the other
+  /// person's join carrying their display name, a rename, a new avatar) have to be applied on
+  /// top - otherwise recent rooms showed raw user IDs until a later full /state fetch repaired
+  /// them. Only done for a complete snapshot (it includes m.room.create, as an initial or
+  /// full-state sync does): an incremental sync's partial state plus a member event would
+  /// otherwise make a group look like it's named after that member.
+  List<dynamic> _currentRoomState(
+    Map<String, dynamic> roomData,
+    List<dynamic> timelineEvents,
+  ) {
+    final state = _asList(roomData['state']);
+    final byKey = <String, dynamic>{};
+    var complete = false;
+    void apply(dynamic raw) {
+      final event = _asMap(raw);
+      final stateKey = event['state_key'];
+      if (stateKey == null) return;
+      final type = (event['type'] ?? '').toString();
+      if (type == 'm.room.create') complete = true;
+      byKey['$type\u0000$stateKey'] = raw;
+    }
+
+    state.forEach(apply);
+    timelineEvents.forEach(apply);
+    return complete ? byKey.values.toList(growable: false) : state;
+  }
+
   String _roomTitle(String roomId, List<dynamic> stateEvents) {
     final events = stateEvents.map(_asMap).toList(growable: false);
     for (final event in events) {
@@ -4024,9 +4870,32 @@ class MatrixRestService {
     _participantsCacheAt[roomId] = DateTime.now();
   }
 
+  /// The room's m.room.power_levels content, or empty when the state doesn't include it.
+  Map<String, dynamic> _powerLevelsFrom(List<dynamic> stateEvents) {
+    for (final event in stateEvents.map(_asMap)) {
+      if ((event['type'] ?? '').toString() == 'm.room.power_levels' &&
+          (event['state_key'] ?? '').toString().isEmpty) {
+        return _asMap(event['content']);
+      }
+    }
+    return const <String, dynamic>{};
+  }
+
+  /// A member's role from the room's power levels: 100 is an admin (what the server gives
+  /// club/group/event admins and the cluborbit bot), 50 a moderator, anything lower a member.
+  ChatMemberLevel _memberLevel(Map<String, dynamic> powerLevels, String userId) {
+    final users = _asMap(powerLevels['users']);
+    final raw = users.containsKey(userId) ? users[userId] : powerLevels['users_default'];
+    final level = raw is num ? raw.toInt() : int.tryParse('${raw ?? 0}') ?? 0;
+    if (level >= 100) return ChatMemberLevel.admin;
+    if (level >= 50) return ChatMemberLevel.moderator;
+    return ChatMemberLevel.member;
+  }
+
   List<ChatParticipant> _participantsFromStateEvents(
     List<dynamic> stateEvents,
   ) {
+    final powerLevels = _powerLevelsFrom(stateEvents);
     final out = <ChatParticipant>[];
     for (final event in stateEvents.map(_asMap)) {
       if ((event['type'] ?? '').toString() != 'm.room.member') continue;
@@ -4042,7 +4911,7 @@ class MatrixRestService {
         ChatParticipant(
           userId: stateKey,
           displayName: displayNameRaw.isEmpty ? stateKey : displayNameRaw,
-          level: ChatMemberLevel.member,
+          level: _memberLevel(powerLevels, stateKey),
           membership: membership,
           avatarUrl: _mxcToThumbnailHttp(content['avatar_url']),
         ),
@@ -4259,7 +5128,7 @@ class MatrixRestService {
   Future<Map<String, dynamic>?> _loadLatestMessageEvent(String roomId) async {
     try {
       final raw = await _core.getRoomMessagesRaw(roomId, limit: 20);
-      final chunk = _asList(raw['chunk']);
+      final chunk = await _decryptChunk(roomId, _asList(raw['chunk']));
       return _latestMessageEvent(chunk);
     } catch (_) {
       return null;
@@ -4323,11 +5192,28 @@ class MatrixRestService {
     if (msgType == 'm.video') return MessageKind.video;
 
     final body = (content['body'] ?? '').toString().trim();
-    if (body.isNotEmpty && body.runes.length <= 3) {
+    // Only an emoji-only body (up to 3 emoji) gets the enlarged emoji style — a plain length check
+    // also caught short text like "Hi" or "ok" and rendered it at emoji size.
+    if (body.isNotEmpty &&
+        _emojiOnlyPattern.hasMatch(body) &&
+        _emojiPattern.allMatches(body).length <= 3) {
       return MessageKind.emoji;
     }
     return MessageKind.text;
   }
+
+  // The analyzer doesn't understand \p{...} property escapes; they're valid with unicode: true.
+  static final RegExp _emojiPattern = RegExp(
+    // ignore: valid_regexps
+    r'\p{Extended_Pictographic}',
+    unicode: true,
+  );
+  // Pictographs plus the joiners/modifiers/flags/keycaps that combine them into one emoji.
+  static final RegExp _emojiOnlyPattern = RegExp(
+    // ignore: valid_regexps
+    r'^(?:\p{Extended_Pictographic}|\p{Emoji_Modifier}|[\u{1F1E6}-\u{1F1FF}]|[#*0-9]\u{FE0F}?\u{20E3}|\u{200D}|\u{FE0F}|\s)+$',
+    unicode: true,
+  );
 
   String _resolveSenderName(
     String senderId,
@@ -4425,6 +5311,10 @@ class MatrixRestService {
     if (msgType == 'm.image') {
       return caption.isNotEmpty ? '🖼 $caption' : '[Image]';
     }
+    if (msgType == galleryMsgType) {
+      final count = (content['images'] as List?)?.length ?? 0;
+      return caption.isNotEmpty ? '🖼 $caption' : '📷 $count photos';
+    }
     if (msgType == 'm.video') {
       return caption.isNotEmpty ? '🎬 $caption' : '[Video]';
     }
@@ -4437,7 +5327,10 @@ class MatrixRestService {
     return _stripForwardPrefix(body);
   }
 
-  bool _isAudioFile({required String mimeType, required String filename}) {
+  static bool _isAudioFile({
+    required String mimeType,
+    required String filename,
+  }) {
     final mime = mimeType.toLowerCase();
     if (mime.startsWith('audio/')) {
       return true;
@@ -4596,7 +5489,7 @@ class MatrixRestService {
     return _bodyFromContent(content);
   }
 
-  String _stripReplyFallback(String body) {
+  static String _stripReplyFallback(String body) {
     final normalized = body.replaceAll('\r\n', '\n');
     if (normalized.trim().isEmpty) {
       return '';
@@ -4651,10 +5544,34 @@ class MatrixRestService {
     final info = _asMap(content['info']);
     final thumb = _mxcToThumbnailHttp(info['thumbnail_url']);
     if ((thumb ?? '').isNotEmpty) return thumb;
+    // A real encrypted thumbnail (see sendMediaMessage) — its own separate mxc pointer, so a
+    // plain download (not a server-side resize request, which can't decode ciphertext) is right.
     final thumbFile = _asMap(info['thumbnail_file']);
-    final encryptedThumb = _mxcToThumbnailHttp(thumbFile['url']);
-    if ((encryptedThumb ?? '').isNotEmpty) return encryptedThumb;
+    final encryptedThumbUrl = _mxcToDownloadHttp(thumbFile['url']);
+    if ((encryptedThumbUrl ?? '').isNotEmpty) return encryptedThumbUrl;
+    // Legacy unencrypted full-image fallback — naturally resolves to null for an encrypted
+    // message with no thumbnail_file either (content['url'] is absent; only content['file'] is
+    // set), correctly leaving the caller to decide whether to fall back to the full attachment.
     return _mxcToThumbnailHttp(content['url']);
+  }
+
+  /// The `EncryptedFile` info (key/iv/hash) for a message's own attachment, if it has one — null
+  /// for a legacy unencrypted message (plain `content.url`) or a non-media message.
+  Map<String, dynamic>? _mediaEncryption(Map<String, dynamic> content) {
+    final file = content['file'];
+    if (file is! Map) return null;
+    return EncryptedFileInfo.fromJson(_asMap(file))?.toJson();
+  }
+
+  /// The `EncryptedFile` info for a message's *thumbnail* specifically (`info.thumbnail_file`) —
+  /// a separate key/iv from the main attachment's own encryption, since it's a distinct upload.
+  /// Null when there's no encrypted thumbnail (a legacy message, one with only a plain
+  /// `info.thumbnail_url`, or no thumbnail at all).
+  Map<String, dynamic>? _thumbnailEncryption(Map<String, dynamic> content) {
+    final info = _asMap(content['info']);
+    final thumbFile = info['thumbnail_file'];
+    if (thumbFile is! Map) return null;
+    return EncryptedFileInfo.fromJson(_asMap(thumbFile))?.toJson();
   }
 
   String _mimeTypeFromFileName(String filename, [MessageKind? kind]) {

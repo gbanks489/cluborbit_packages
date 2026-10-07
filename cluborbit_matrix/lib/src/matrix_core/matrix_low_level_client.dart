@@ -1,5 +1,6 @@
 // ignore_for_file: annotate_overrides
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:uuid/uuid.dart';
@@ -56,8 +57,91 @@ class MatrixLowLevelClient implements MatrixTransportClient {
 
   @override
   String? get currentUserId => _userId;
+  String? get currentDeviceId => _deviceId;
+  @override
+  String? get currentAccessToken => _accessToken;
   @override
   bool get isLoggedIn => (_accessToken ?? '').isNotEmpty;
+
+  /// Executes a request the native crypto engine's `outgoingRequests()` produced — method, path
+  /// and body are already fully Matrix-spec-correct (built in Rust against ruma's real endpoint
+  /// definitions, see cluborbit_matrix_native's request_to_pending), so this just sends it as-is
+  /// and hands the raw response body back as a JSON string for `markRequestAsSent` to parse. Kept
+  /// here rather than in the crypto layer since this class already owns the homeserver URL, auth
+  /// token and HTTP client — the crypto layer has no HTTP knowledge of its own by design.
+  Future<String> sendCryptoRequest({
+    required String method,
+    required String pathAndQuery,
+    required String bodyJson,
+  }) async {
+    final uri = Uri.parse('$_homeserver$pathAndQuery');
+    final result = await _requestJson(
+      method: method,
+      uri: uri,
+      headers: _authHeaders(),
+      body: bodyJson,
+    );
+    return jsonEncode(result);
+  }
+
+  /// Reads one piece of this account's global account data (not room-scoped) — used to fetch the
+  /// `m.secret_storage.*`/`m.megolm_backup.v1`/`m.cross_signing.*` events the SSSS key-backup and
+  /// cross-signing restore flow needs. Returns null both when the event genuinely isn't set (a
+  /// 404, e.g. an account that has never set up 4S) and on any other request failure — callers
+  /// already treat "nothing to restore" as a normal, silent case.
+  Future<Map<String, dynamic>?> getAccountData(String type) async {
+    final userId = _userId;
+    if (userId == null || userId.isEmpty) return null;
+    try {
+      return await _requestJson(
+        method: 'GET',
+        uri: _clientUri(
+          '/user/${Uri.encodeComponent(userId)}/account_data/${Uri.encodeComponent(type)}',
+        ),
+        headers: _authHeaders(),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Like [getAccountData], but only returns null when the event genuinely isn't set (404) and
+  /// throws on any other failure - for callers that CREATE something when it's missing, where
+  /// mistaking a network error for "not set" would overwrite existing secret storage/backups.
+  Future<Map<String, dynamic>?> getAccountDataStrict(String type) async {
+    final userId = _userId;
+    if (userId == null || userId.isEmpty) {
+      throw StateError('Not logged in');
+    }
+    try {
+      return await _requestJson(
+        method: 'GET',
+        uri: _clientUri(
+          '/user/${Uri.encodeComponent(userId)}/account_data/${Uri.encodeComponent(type)}',
+        ),
+        headers: _authHeaders(),
+      );
+    } on StateError catch (e) {
+      if (e.message.contains('[M_NOT_FOUND]')) return null;
+      rethrow;
+    }
+  }
+
+  Future<void> setAccountData(String type, Map<String, dynamic> content) async {
+    final userId = _userId;
+    if (userId == null || userId.isEmpty) {
+      throw StateError('Not logged in');
+    }
+    await _requestJson(
+      method: 'PUT',
+      uri: _clientUri(
+        '/user/${Uri.encodeComponent(userId)}/account_data/${Uri.encodeComponent(type)}',
+      ),
+      headers: _authHeaders(),
+      body: jsonEncode(content),
+    );
+  }
+
   @override
   MatrixTransportCapabilities get capabilities =>
       const MatrixTransportCapabilities(
@@ -169,6 +253,7 @@ class MatrixLowLevelClient implements MatrixTransportClient {
     required String username,
     required String password,
     String initialDeviceDisplayName = 'PlayerChat REST Client',
+    String? deviceId,
   }) async {
     final uri = _clientUri('/login');
     final res = await _requestJson(
@@ -180,6 +265,7 @@ class MatrixLowLevelClient implements MatrixTransportClient {
         'identifier': {'type': 'm.id.user', 'user': username},
         'password': password,
         'initial_device_display_name': initialDeviceDisplayName,
+        if ((deviceId ?? '').isNotEmpty) 'device_id': deviceId,
       }),
     );
 
@@ -207,6 +293,8 @@ class MatrixLowLevelClient implements MatrixTransportClient {
   Future<Map<String, dynamic>> sync({
     int timeoutMs = 0,
     bool fullState = false,
+    // Replaces the default room-timeline filter (e.g. to fetch only to-device traffic).
+    Map<String, dynamic>? filter,
   }) async {
     final useSince = !fullState && (_since ?? '').isNotEmpty;
     Future<Map<String, dynamic>> runSync({required bool includeSince}) {
@@ -215,11 +303,14 @@ class MatrixLowLevelClient implements MatrixTransportClient {
         query['since'] = _since!;
       }
       if (fullState) query['full_state'] = 'true';
-      query['filter'] = jsonEncode({
-        'room': {
-          'timeline': {'limit': 20},
-        },
-      });
+      query['filter'] = jsonEncode(
+        filter ??
+            {
+              'room': {
+                'timeline': {'limit': 20},
+              },
+            },
+      );
       return _requestJson(
         method: 'GET',
         uri: _clientUri('/sync', query),
@@ -463,13 +554,22 @@ class MatrixLowLevelClient implements MatrixTransportClient {
     required List<int> bytes,
     required String filename,
     required String mimeType,
+    void Function(int sent, int total)? onSendProgress,
   }) async {
     final uri = _mediaUri('/upload', {'filename': filename});
-    final response = await _http.post(
-      uri,
-      headers: _authHeaders(extra: {'content-type': mimeType}, json: false),
-      body: bytes,
-    );
+    final headers = _authHeaders(extra: {'content-type': mimeType}, json: false);
+
+    final http.Response response;
+    if (onSendProgress == null) {
+      response = await _http.post(uri, headers: headers, body: bytes);
+    } else {
+      response = await _postWithProgress(
+        uri: uri,
+        headers: headers,
+        bytes: bytes,
+        onSendProgress: onSendProgress,
+      );
+    }
     final jsonMap = await _decode(response);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final rawBody = response.body;
@@ -481,6 +581,40 @@ class MatrixLowLevelClient implements MatrixTransportClient {
       throw StateError('Media upload failed: $detail');
     }
     return (jsonMap['content_uri'] ?? '').toString();
+  }
+
+  /// POSTs [bytes] a chunk at a time via a StreamedRequest so [onSendProgress] can report how
+  /// much has been queued to the socket so far - package:http has no built-in upload-progress hook
+  /// (unlike e.g. Dio's onSendProgress), so this is the closest approximation available without
+  /// switching HTTP clients. Each chunk yields a tick first, so progress is reported incrementally
+  /// as the request actually streams out instead of all at once before the first byte is sent.
+  Future<http.Response> _postWithProgress({
+    required Uri uri,
+    required Map<String, String> headers,
+    required List<int> bytes,
+    required void Function(int sent, int total) onSendProgress,
+  }) async {
+    final request = http.StreamedRequest('POST', uri);
+    request.headers.addAll(headers);
+    request.contentLength = bytes.length;
+
+    const chunkSize = 64 * 1024;
+    unawaited(() async {
+      var offset = 0;
+      while (offset < bytes.length) {
+        final end = (offset + chunkSize < bytes.length)
+            ? offset + chunkSize
+            : bytes.length;
+        request.sink.add(bytes.sublist(offset, end));
+        offset = end;
+        onSendProgress(offset, bytes.length);
+        await Future<void>.delayed(Duration.zero);
+      }
+      await request.sink.close();
+    }());
+
+    final streamedResponse = await _http.send(request);
+    return http.Response.fromStream(streamedResponse);
   }
 
   Future<String> sendMediaMessage({

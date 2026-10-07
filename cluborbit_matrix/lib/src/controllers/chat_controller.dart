@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:image/image.dart' as img;
 import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuthException;
@@ -8,11 +9,16 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:video_compress/video_compress.dart';
 import 'package:cluborbit_models/cluborbit_models.dart';
 import 'package:clubcommon/clubcommon.dart';
 
 import '../services/auth_service.dart';
+import '../services/chat_secure_storage.dart';
 import '../services/chat_thread_preferences_store.dart';
+import 'dart:convert';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/connectivity_service.dart';
@@ -55,6 +61,16 @@ class ChatController extends ChangeNotifier {
   static const Duration _roomLookupRetryDelay = Duration(seconds: 10);
   bool _deferredNotifyScheduled = false;
 
+  // The Matrix access token is a full-session bearer credential (anyone holding it can read/send
+  // chat as this user), so it's kept only in the platform-encrypted store (Android Keystore / iOS
+  // Keychain via flutter_secure_storage) - never in plain SharedPreferences. Both the background
+  // notification-action handler (lib/notifications/notification_action.dart) and the native
+  // Android notification helper (NotificationHelper.kt) already scan every entry in this same
+  // FlutterSecureStorage store for a JSON value with "homeserver"/"accessToken" fields, so any key
+  // name works here - this one is just used to overwrite the previous session's entry on re-login.
+  static const String _matrixSessionBackupKey = 'co_matrix_session_backup';
+  static const FlutterSecureStorage _secureStorage = chatSecureStorage;
+
   ChatController({
     required AuthService authService,
     required MatrixRestService matrixService,
@@ -90,6 +106,11 @@ class ChatController extends ChangeNotifier {
   double _matrixSyncProgress = 0;
   String _matrixSyncStatus = 'Preparing chats...';
   String? _lastBackgroundConnectAttemptUid;
+  // Background-connect retry state: a failed attempt (e.g. the chat-profile request timing out
+  // on a slow start) used to leave chat disconnected for the rest of the session.
+  int _backgroundConnectFailures = 0;
+  DateTime? _backgroundConnectRetryAfter;
+  Timer? _backgroundConnectRetryTimer;
   String _query = '';
   int _searchRequestId = 0;
   String? _activeRoomId;
@@ -185,9 +206,94 @@ class ChatController extends ChangeNotifier {
 
   List<ChatParticipant> get searchedUsers => _searchedUsers;
 
+  /// Homeserver + access token of the live Matrix session, or null when not connected. For
+  /// notification rendering, which needs them for avatars and inline replies.
+  ({String homeserver, String accessToken})? get notificationAuth {
+    final token = _matrixService.accessToken?.trim() ?? '';
+    final homeserver = _matrixService.homeserver.trim();
+    if (!_matrixService.isLoggedIn || token.isEmpty || homeserver.isEmpty) {
+      return null;
+    }
+    return (homeserver: homeserver, accessToken: token);
+  }
+
+  /// Saves the live session to encrypted storage, where the notification code reads it. The
+  /// password login path already does this; a restored session didn't, so notifications then had
+  /// no credentials. Safe to call repeatedly.
+  Future<void> persistNotificationAuth() async {
+    final auth = notificationAuth;
+    if (auth == null) return;
+    try {
+      await _secureStorage.write(
+        key: _matrixSessionBackupKey,
+        value: jsonEncode({
+          'homeserver': auth.homeserver,
+          'accessToken': auth.accessToken,
+          'userId': matrixUserId,
+          'deviceId': '',
+        }),
+      );
+    } catch (_) {}
+  }
+
+  String? _roomOnScreen;
+
+  /// The room whose chat screen is currently open (set by the chat screen itself), so pushes for
+  /// it can skip the notification.
+  String? get roomOnScreen => _roomOnScreen;
+
+  /// Set by the app: called when a room's chat comes on screen, e.g. to clear its notification.
+  void Function(String roomId)? onRoomViewed;
+
+  void setRoomOnScreen(String roomId) {
+    _roomOnScreen = roomId;
+    onRoomViewed?.call(roomId);
+  }
+
+  void clearRoomOnScreen(String roomId) {
+    if (_roomOnScreen == roomId) _roomOnScreen = null;
+  }
+
+  /// Sends a notification inline reply through the normal (encrypted) send path, then marks the
+  /// room read - replying from the notification means the user has seen it. Returns whether the
+  /// message was sent.
+  Future<bool> sendNotificationReply({
+    required String roomId,
+    required String text,
+  }) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty || !_matrixService.isLoggedIn) return false;
+    try {
+      await _matrixService.sendTextMessage(roomId: roomId, text: trimmed);
+    } catch (e) {
+      debugPrint('[notification-reply] send failed: $e');
+      return false;
+    }
+    try {
+      await _matrixService.setReadMarker(roomId);
+    } catch (_) {}
+    unawaited(_refreshFromSync());
+    return true;
+  }
+
+  /// Decrypted text for a pushed event (e.g. "📷 Sent you an image"), or null if it can't be read.
+  Future<String?> resolveNotificationBody(String roomId, String eventId) =>
+      _matrixService.resolveNotificationBody(roomId, eventId);
+
+  String? cachedRoomAvatarUrl(String roomId) =>
+      _matrixService.cachedRoomAvatarUrl(roomId);
+
+  String? cachedParticipantAvatarUrl(String roomId, String userId) =>
+      _matrixService.cachedParticipantAvatarUrl(roomId, userId);
+
+  String? cachedParticipantDisplayName(String roomId, String userId) =>
+      _matrixService.cachedParticipantDisplayName(roomId, userId);
+
   List<ChatMessage> get messages => _messages;
   List<ChatParticipant> get participants => _participants;
   List<ChatParticipant> get typingUsers => _typingUsers;
+  List<String> typingNamesInRoom(String roomId) =>
+      _matrixService.typingNamesInRoom(roomId);
   ChatMessage? get replyToMessage => _replyToMessage;
   List<VerificationSession> get verificationSessions => _verificationSessions;
   User? get userProfile => _userProfile;
@@ -574,6 +680,12 @@ class ChatController extends ChangeNotifier {
     if (_lastBackgroundConnectAttemptUid == firebaseUserId) {
       return;
     }
+    // Backing off after a failure: this is called on every controller change, so without this
+    // a down server would be retried in a tight loop. The retry timer calls back in when due.
+    final retryAfter = _backgroundConnectRetryAfter;
+    if (retryAfter != null && DateTime.now().isBefore(retryAfter)) {
+      return;
+    }
     _lastBackgroundConnectAttemptUid = firebaseUserId;
 
     _setMatrixConnecting(
@@ -593,10 +705,13 @@ class ChatController extends ChangeNotifier {
         password: creds.matrixPassword,
       );
       connected = true;
+      _backgroundConnectFailures = 0;
+      _backgroundConnectRetryAfter = null;
       _errorNotifier.clear();
     } catch (e) {
       failureMessage = _describeError(e);
       _errorNotifier.setError(failureMessage);
+      _scheduleBackgroundConnectRetry(firebaseUserId);
     } finally {
       _setMatrixConnecting(
         false,
@@ -606,6 +721,40 @@ class ChatController extends ChangeNotifier {
             : (failureMessage ?? 'Chat connection failed'),
       );
     }
+  }
+
+  /// Lets a failed background connect be tried again: 5s, 15s, 30s, then every 60s.
+  void _scheduleBackgroundConnectRetry(String firebaseUserId) {
+    if (_isDisposed) return;
+    const delays = <Duration>[
+      Duration(seconds: 5),
+      Duration(seconds: 15),
+      Duration(seconds: 30),
+      Duration(seconds: 60),
+    ];
+    final delay =
+        delays[_backgroundConnectFailures.clamp(0, delays.length - 1)];
+    _backgroundConnectFailures++;
+    _backgroundConnectRetryAfter = DateTime.now().add(delay);
+    if (_lastBackgroundConnectAttemptUid == firebaseUserId) {
+      _lastBackgroundConnectAttemptUid = null;
+    }
+    debugPrint(
+      '[ChatController] chat connect failed (attempt $_backgroundConnectFailures); retrying in ${delay.inSeconds}s',
+    );
+    _backgroundConnectRetryTimer?.cancel();
+    _backgroundConnectRetryTimer = Timer(delay, () {
+      if (_isDisposed || _authService.currentUser?.uid != firebaseUserId)
+        return;
+      unawaited(connectMatrixUsingProfileInBackground());
+    });
+  }
+
+  void _resetBackgroundConnectRetry() {
+    _backgroundConnectRetryTimer?.cancel();
+    _backgroundConnectRetryTimer = null;
+    _backgroundConnectFailures = 0;
+    _backgroundConnectRetryAfter = null;
   }
 
   Future<bool> tryAutoLoginAndConnect() async {
@@ -640,15 +789,10 @@ class ChatController extends ChangeNotifier {
       await _syncSubscription?.cancel();
       _syncSubscription = null;
       _lastBackgroundConnectAttemptUid = null;
+      _resetBackgroundConnectRetry();
       _setMatrixConnecting(false, progress: 0, status: 'Preparing chats...');
       await _matrixService.logout();
-      unawaited(() async {
-        try {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.remove('homeserver_url');
-          await prefs.remove('access_token');
-        } catch (_) {}
-      }());
+      unawaited(_clearStoredSession());
 
       _query = '';
       _activeRoomId = null;
@@ -670,14 +814,34 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  /// Removes the persisted Matrix session (encrypted store, plus any leftover plaintext copy from
+  /// an older build) so a signed-out session's access token can't be read/used afterwards.
+  Future<void> _clearStoredSession() async {
+    try {
+      await _secureStorage.delete(key: _matrixSessionBackupKey);
+    } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('homeserver_url');
+      await prefs.remove('access_token');
+    } catch (_) {}
+  }
+
   Future<void> logout() async {
     _setLoading(true);
     try {
       await _syncSubscription?.cancel();
       _syncSubscription = null;
       _lastBackgroundConnectAttemptUid = null;
+      _resetBackgroundConnectRetry();
       _setMatrixConnecting(false, progress: 0, status: 'Preparing chats...');
-      await _matrixService.logout();
+      try {
+        await _matrixService.logout();
+      } finally {
+        // Clear the local session even if the server-side logout call fails (e.g. offline) - an
+        // unreachable homeserver must not leave a valid access token sitting on the device.
+        await _clearStoredSession();
+      }
       await _authService.signOut();
 
       _query = '';
@@ -1260,6 +1424,17 @@ class ChatController extends ChangeNotifier {
   void clearReplyTarget() {
     _replyToMessage = null;
     notifyListeners();
+  }
+
+  /// Downloads and (when the message's attachment is encrypted) decrypts message media — pass
+  /// `message.metadata['mediaUrl']`/`['thumbnailUrl']` as `httpUrl` and
+  /// `message.metadata['mediaEncryption']` (or `['replyToMediaEncryption']` for a reply preview)
+  /// as `encryption`. Returns the raw, displayable bytes either way.
+  Future<Uint8List> resolveMediaBytes(
+    String httpUrl, {
+    Map<String, dynamic>? encryption,
+  }) {
+    return _matrixService.resolveMediaBytes(httpUrl, encryption: encryption);
   }
 
   Future<void> editMessage({
@@ -1920,6 +2095,21 @@ class ChatController extends ChangeNotifier {
     }
 
     final captionText = (caption ?? '').trim();
+
+    // Several images: one gallery message (a single collage bubble), same as cluborbit-web.
+    if (images.length > 1) {
+      final sent = await sendImageGallery(images: images, caption: captionText);
+      if (!sent) return false;
+      _replyToMessage = null;
+      try {
+        await openRoom(roomId, roomTitle: _activeRoomTitle);
+      } catch (e) {
+        if (!_isTransientNetworkError(e)) _errorNotifier.setError(e.toString());
+        notifyListeners();
+      }
+      return true;
+    }
+
     var sentCount = 0;
     for (var i = 0; i < images.length; i++) {
       final file = images[i];
@@ -1957,6 +2147,57 @@ class ChatController extends ChangeNotifier {
       notifyListeners();
     }
     return true;
+  }
+
+  /// Sends several images to the active room as one gallery message (org.cluborbit.gallery),
+  /// shown as a single collage bubble. Each image is size-checked and compressed as for a single
+  /// image send; ones that are too large are skipped.
+  Future<bool> sendImageGallery({
+    required List<PickedImageMedia> images,
+    String? caption,
+    void Function(int fileIndex, int sent, int total)? onUploadProgress,
+  }) async {
+    final roomId = _activeRoomId;
+    if (roomId == null) {
+      _errorNotifier.setError('No active chat room — please re-open the chat.');
+      return false;
+    }
+    try {
+      final prepared =
+          <
+            ({
+              List<int> bytes,
+              String filename,
+              String mimeType,
+              int? width,
+              int? height,
+            })
+          >[];
+      for (final image in images) {
+        if (!_validateUploadSize(image.bytes.lengthInBytes, image.filename))
+          continue;
+        final bytes = await _compressImageIfNeeded(image.bytes, image.filename);
+        prepared.add((
+          bytes: bytes,
+          filename: image.filename,
+          mimeType: _mimeTypeFromFileName(image.filename, MessageKind.image),
+          width: null,
+          height: null,
+        ));
+      }
+      if (prepared.isEmpty) return false;
+      await _matrixService.sendImageGallery(
+        roomId: roomId,
+        images: prepared,
+        caption: caption,
+        onUploadProgress: onUploadProgress,
+      );
+      return true;
+    } catch (e, s) {
+      debugPrint('[ChatController] sendImageGallery failed: $e\n$s');
+      _errorNotifier.setError(e.toString());
+      return false;
+    }
   }
 
   Future<bool> pickAndSendImages({String? caption}) async {
@@ -2009,6 +2250,7 @@ class ChatController extends ChangeNotifier {
     required MessageKind kind,
     String? caption,
     bool refreshAfterSend = true,
+    void Function(int sent, int total)? onUploadProgress,
   }) async {
     final roomId = _activeRoomId;
     if (roomId == null) {
@@ -2023,6 +2265,23 @@ class ChatController extends ChangeNotifier {
       final uploadBytes = kind == MessageKind.image
           ? await _compressImageIfNeeded(bytes, filename)
           : bytes;
+
+      // A real preview thumbnail for video, generated (and separately encrypted — see
+      // MatrixRestService.sendMediaMessage) before upload — without this, showing any preview for
+      // an encrypted video means downloading and decrypting the *entire* video just to render a
+      // chat bubble.
+      Uint8List? thumbnailBytes;
+      int? thumbnailWidth;
+      int? thumbnailHeight;
+      if (kind == MessageKind.video) {
+        final thumbnail = await _extractVideoThumbnail(uploadBytes);
+        if (thumbnail != null) {
+          thumbnailBytes = thumbnail.bytes;
+          thumbnailWidth = thumbnail.width;
+          thumbnailHeight = thumbnail.height;
+        }
+      }
+
       await _matrixService.sendMediaMessage(
         roomId: roomId,
         bytes: uploadBytes,
@@ -2030,6 +2289,10 @@ class ChatController extends ChangeNotifier {
         mimeType: _mimeTypeFromFileName(filename, kind),
         kind: kind,
         caption: caption,
+        thumbnailBytes: thumbnailBytes,
+        thumbnailWidth: thumbnailWidth,
+        thumbnailHeight: thumbnailHeight,
+        onUploadProgress: onUploadProgress,
       );
       if (refreshAfterSend) {
         await openRoom(roomId, roomTitle: _activeRoomTitle);
@@ -2039,6 +2302,92 @@ class ChatController extends ChangeNotifier {
       debugPrint('[ChatController] sendMedia failed: $e\n$s');
       _errorNotifier.setError(e.toString());
       return false;
+    }
+  }
+
+  /// Sends a video recorded with the camera. Camera recordings are large (a few seconds of
+  /// 1080p easily passes the 10 MB upload limit), so it's re-encoded at 960x540 first; if that
+  /// fails the original is sent as-is, still subject to the size check in [sendMedia].
+  Future<bool> sendCapturedVideo({
+    required String path,
+    String? caption,
+    void Function(int sent, int total)? onUploadProgress,
+  }) async {
+    File? compressed;
+    try {
+      try {
+        final info = await VideoCompress.compressVideo(
+          path,
+          quality: VideoQuality.Res960x540Quality,
+          includeAudio: true,
+        );
+        compressed = info?.file;
+      } catch (e) {
+        debugPrint('[ChatController] Video compression failed, sending original: $e');
+      }
+      final source = compressed ?? File(path);
+      final bytes = await source.readAsBytes();
+      if (bytes.isEmpty) {
+        _errorNotifier.setError('The recorded video is empty.');
+        return false;
+      }
+      final extension = compressed != null
+          ? 'mp4'
+          : (path.contains('.') ? path.split('.').last.toLowerCase() : 'mp4');
+      return sendMedia(
+        bytes: bytes,
+        filename: 'video_${DateTime.now().millisecondsSinceEpoch}.$extension',
+        kind: MessageKind.video,
+        caption: caption,
+        onUploadProgress: onUploadProgress,
+      );
+    } catch (e, s) {
+      debugPrint('[ChatController] sendCapturedVideo failed: $e\n$s');
+      _errorNotifier.setError(e.toString());
+      return false;
+    } finally {
+      final file = compressed;
+      if (file != null) {
+        unawaited(file.delete().catchError((_) => file));
+      }
+    }
+  }
+
+  /// Extracts a JPEG thumbnail frame from a video's raw bytes — VideoCompress needs an actual
+  /// file to read (not in-memory bytes), so this writes to a short-lived temp file first, deleted
+  /// again as soon as extraction finishes either way.
+  Future<({Uint8List bytes, int width, int height})?> _extractVideoThumbnail(
+    Uint8List videoBytes,
+  ) async {
+    File? tempFile;
+    try {
+      final dir = await getTemporaryDirectory();
+      final path =
+          '${dir.path}/co_video_thumb_src_${DateTime.now().microsecondsSinceEpoch}.mp4';
+      tempFile = File(path);
+      await tempFile.writeAsBytes(videoBytes, flush: true);
+
+      final thumbnailBytes = await VideoCompress.getByteThumbnail(
+        path,
+        quality: 70,
+      );
+      if (thumbnailBytes == null) return null;
+
+      final decoded = img.decodeImage(thumbnailBytes);
+      if (decoded == null) return null;
+
+      return (
+        bytes: thumbnailBytes,
+        width: decoded.width,
+        height: decoded.height,
+      );
+    } catch (e) {
+      debugPrint('[ChatController] Failed to extract video thumbnail: $e');
+      return null;
+    } finally {
+      if (tempFile != null) {
+        unawaited(tempFile.delete().catchError((_) => tempFile!));
+      }
     }
   }
 
@@ -2075,6 +2424,38 @@ class ChatController extends ChangeNotifier {
         maxDimension: maxDimension,
       ),
     );
+  }
+
+  /// Always resizes an image to at most [maxDimension] on its longest side and re-encodes it as
+  /// a JPEG at [quality] - unconditionally, unlike [_compressImageIfNeeded]'s size-threshold
+  /// safety net. Intended for content a user didn't pick through this app's own (already
+  /// size-constrained) image picker - e.g. a photo shared in from another app at full camera
+  /// resolution. Falls back to the original bytes if that didn't actually end up smaller, or if
+  /// the file isn't a resizable raster format (gif/heic/svg would break if re-encoded as JPEG).
+  static Future<Uint8List> downscaleImageForUpload(
+    Uint8List bytes,
+    String filename, {
+    int maxDimension = 1920,
+    int quality = 84,
+  }) async {
+    final lower = filename.toLowerCase();
+    final isResizable =
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.png') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.bmp');
+    if (!isResizable) return bytes;
+
+    try {
+      final resized = await compute(
+        _downscaleImageBytesIsolate,
+        _DownscaleArgs(bytes: bytes, maxDimension: maxDimension, quality: quality),
+      );
+      return resized.length < bytes.length ? resized : bytes;
+    } catch (_) {
+      return bytes; // best-effort - never block sharing on a resize failure
+    }
   }
 
   String _mimeTypeFromFileName(String filename, [MessageKind? kind]) {
@@ -2114,6 +2495,9 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _refreshFromSync() async {
+    // A sync just succeeded, so the connection is working: drop any connectivity error (it would
+    // otherwise surface after the release-build grace period even though it has recovered).
+    _errorNotifier.clearConnectivityError();
     try {
       // Use the service's in-memory cache which is already kept current by
       // _applyThreadSyncDelta in the long-poll loop. Calling getJoinedThreads()
@@ -2194,12 +2578,26 @@ class ChatController extends ChangeNotifier {
     );
     // Persist credentials so the main isolate can show notifications when
     // the app is backgrounded (background-isolate MethodChannels are unreliable
-    // when the main isolate is alive).
+    // when the main isolate is alive). Kept in encrypted storage only - see
+    // _matrixSessionBackupKey above for why plain SharedPreferences is not used.
     unawaited(() async {
       try {
+        final backupJson = jsonEncode({
+          'homeserver': _matrixService.homeserver,
+          'accessToken': matrixCreds.accessToken,
+          'userId': matrixCreds.userId,
+          'deviceId': matrixCreds.deviceId ?? '',
+        });
+        await _secureStorage.write(
+          key: _matrixSessionBackupKey,
+          value: backupJson,
+        );
+        // One-time cleanup for installs updated from an older build that wrote the token in
+        // plain SharedPreferences: remove the leftover plaintext copy now that a fresh, correct
+        // one has just been written to encrypted storage above.
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('homeserver_url', _matrixService.homeserver);
-        await prefs.setString('access_token', matrixCreds.accessToken);
+        await prefs.remove('homeserver_url');
+        await prefs.remove('access_token');
       } catch (_) {}
     }());
     _updateMatrixSyncProgress(0.72, 'Loading conversations...');
@@ -2367,6 +2765,7 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _isDisposed = true;
+    _backgroundConnectRetryTimer?.cancel();
     _syncSubscription?.cancel();
     super.dispose();
   }
@@ -2392,6 +2791,39 @@ class _CompressArgs {
   final Uint8List bytes;
   final int maxBytes;
   final int maxDimension;
+}
+
+class _DownscaleArgs {
+  const _DownscaleArgs({
+    required this.bytes,
+    required this.maxDimension,
+    required this.quality,
+  });
+  final Uint8List bytes;
+  final int maxDimension;
+  final int quality;
+}
+
+/// Unlike _compressImageBytesIsolate (a byte-size safety net only triggered above a size
+/// threshold - see _compressImageIfNeeded), this always resizes to maxDimension and re-encodes at
+/// a flat quality, the same policy the web client's compressImage() uses - so a full-resolution
+/// shared photo is reliably smaller before it's ever uploaded, not just when it happens to be huge.
+Uint8List _downscaleImageBytesIsolate(_DownscaleArgs args) {
+  final decoded = img.decodeImage(args.bytes);
+  if (decoded == null) {
+    return args.bytes;
+  }
+
+  img.Image resized = decoded;
+  if (decoded.width > args.maxDimension || decoded.height > args.maxDimension) {
+    resized = img.copyResize(
+      decoded,
+      width: decoded.width >= decoded.height ? args.maxDimension : -1,
+      height: decoded.height > decoded.width ? args.maxDimension : -1,
+    );
+  }
+  final encoded = img.encodeJpg(resized, quality: args.quality);
+  return Uint8List.fromList(encoded);
 }
 
 Uint8List _compressImageBytesIsolate(_CompressArgs args) {

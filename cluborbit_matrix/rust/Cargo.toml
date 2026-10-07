@@ -4,8 +4,56 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib"]
+# staticlib is needed alongside cdylib for iOS (which links the Rust code into the app binary
+# rather than shipping a standalone .so the way Android does) — added now so the crate is ready
+# for that even though the actual iOS build has to happen on a Mac.
+crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flutter_rust_bridge = "2.11"
-vodozemac = "0.9"
+flutter_rust_bridge = "=2.13.0"
+# matrix-sdk-crypto (Apache-2.0, matrix-org/matrix-rust-sdk) rather than raw vodozemac — it's the
+# layer built ON TOP of vodozemac that already implements device tracking, Megolm session
+# management, cross-signing and key backup, instead of us hand-building all of that ourselves. It's
+# the exact same crate whose WASM build (@matrix-org/matrix-sdk-crypto-wasm) already powers
+# cluborbit-web's encryption, so the two clients share one audited crypto implementation.
+matrix-sdk-crypto = { version = "0.13", default-features = false }
+# Persistent CryptoStore backend — without this every app restart forgets all keys/sessions,
+# which would make every previously-encrypted message permanently unreadable each time the app
+# restarts. Version unpinned beyond 0.13 pending `cargo build` confirming what's actually
+# compatible with matrix-sdk-crypto 0.13's CryptoStore trait version.
+matrix-sdk-sqlite = { version = "0.13", default-features = false, features = ["crypto-store"] }
+# Forces the transitive rusqlite dependency (pulled in by matrix-sdk-sqlite) to compile SQLite
+# from source and link it statically, via Cargo's feature unification, rather than link against
+# whatever SQLite happens to be installed on the build machine — there isn't one here, and relying
+# on whatever version ships on a given Android device would be fragile anyway.
+rusqlite = { version = "0.35", features = ["bundled"] }
+# matrix-sdk-crypto doesn't re-export ruma at a public path, so UserId/DeviceId need to come from
+# here directly — pinned to the same 0.12 line matrix-sdk-crypto 0.13 itself pulls in (confirmed
+# via `cargo build`'s dependency resolution) so the types are actually the same ones its APIs expect.
+ruma = "0.12"
+tokio = { version = "1", features = ["rt", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# For converting ruma's typed API request/response structs to/from plain HTTP request/response
+# shapes ourselves (method + path + JSON body), so the Dart side only needs a generic "make this
+# HTTP call" REST client rather than any Matrix-protocol-specific knowledge. Version unpinned
+# beyond "1" pending `cargo build` confirming compatibility with whatever ruma actually uses
+# (its own http dependency, seen during earlier builds, is 1.5.x).
+http = "1"
+# Secure Secret Storage and Sharing (SSSS / "4S") isn't part of matrix-sdk-crypto's own API surface
+# (that crate only handles Olm/Megolm + cross-signing + key backup once you already have the raw
+# key material) — these are standard, audited RustCrypto building blocks used to reimplement the
+# well-specified SSSS encryption envelope (https://spec.matrix.org/v1.11/client-server-api/#secret-storage),
+# matched byte-for-byte against matrix-js-sdk's own implementation so mobile can unlock the exact
+# secrets cluborbit-web already stores, not a separate/incompatible 4S setup.
+pbkdf2 = { version = "0.12", default-features = false }
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+aes = "0.8"
+ctr = "0.9"
+base64 = "0.22"
+# Already in the dependency tree transitively (matrix-sdk-crypto uses it for its own key
+# generation) — declared directly here too since a crate can only `use` its own direct
+# dependencies, not ones pulled in transitively by another crate.
+rand = "0.8"

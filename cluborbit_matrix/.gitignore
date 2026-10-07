@@ -4,3 +4,19 @@ build/
 .packages
 pubspec.lock
 android/.gradle/
+
+# Rust build output
+rust/target/
+rust/Cargo.lock
+**/*.rs.bk
+
+# Cross-compiled native libraries (cargo-ndk output, one .so per ABI — ~150-200MB each as debug
+# builds, still tens of MB even in release). Built by a CI/build step from the Rust crate above,
+# never hand-edited, so there's nothing to gain from committing them and a lot of repo bloat to
+# lose — same reasoning as rust/target/ above, just for the cross-compiled artifacts specifically.
+android/src/main/jniLibs/
+ios/**/*.a
+
+# Local/IDE
+*.iml
+.idea/
