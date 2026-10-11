@@ -37,6 +37,11 @@ class BackgroundNotificationDecryptor {
     'account_data': {'types': <String>[]},
   };
 
+  /// Called with the saved session (plus `storePath`, when known) each time [saveSession] runs -
+  /// lets the app hand it to native code that decrypts pushes itself (iOS's notification service
+  /// extension, which can't run Dart).
+  static Future<void> Function(Map<String, String> session)? onSessionSaved;
+
   /// Saves what a closed-app decrypt needs, in encrypted storage. `passphrase` unlocks the crypto
   /// store (the account password - see MatrixCryptoService.initialize).
   static Future<void> saveSession({
@@ -45,7 +50,23 @@ class BackgroundNotificationDecryptor {
     required String userId,
     required String deviceId,
     required String passphrase,
+    String? storePath,
   }) async {
+    final callback = onSessionSaved;
+    if (callback != null) {
+      try {
+        await callback({
+          'homeserver': homeserver,
+          'accessToken': accessToken,
+          'userId': userId,
+          'deviceId': deviceId,
+          'passphrase': passphrase,
+          'storePath': ?storePath,
+        });
+      } catch (e) {
+        debugPrint('[push-bg] onSessionSaved failed: $e');
+      }
+    }
     try {
       await _secureStorage.write(
         key: _storageKey,

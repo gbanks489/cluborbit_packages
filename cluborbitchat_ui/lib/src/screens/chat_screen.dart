@@ -45,6 +45,18 @@ enum _CameraCaptureAction { photo, video }
 
 enum _StructuredMessageType { location, contact, poll }
 
+// Real picked data from the location/contact attachment sheets, sent via
+// ChatController.sendLocation/sendContact as real Matrix events (see
+// MatrixRestService.sendLocationMessage/sendContactMessage) instead of the old plain-text
+// "[Location]"/"[Contact]" marker bodies, so a share from mobile renders correctly on web too.
+typedef _LocationPick = ({double lat, double lng, String? label});
+typedef _ContactPick = ({
+  String name,
+  List<String> phones,
+  List<String> emails,
+  String bracketBody,
+});
+
 class _StructuredMessageData {
   const _StructuredMessageData({
     required this.type,
@@ -4983,16 +4995,10 @@ class _ChatScreenState extends State<ChatScreen> {
         await _handleDocumentAttachment(controller);
         break;
       case _AttachmentAction.location:
-        await _handleStructuredAttachment(
-          controller,
-          composer: () => _showLocationComposerSheet(context),
-        );
+        await _handleLocationAttachment(controller);
         break;
       case _AttachmentAction.contact:
-        await _handleStructuredAttachment(
-          controller,
-          composer: () => _showContactComposerSheet(context),
-        );
+        await _handleContactAttachment(controller);
         break;
       case _AttachmentAction.poll:
         await _handleStructuredAttachment(
@@ -5213,8 +5219,55 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  Future<String?> _showLocationComposerSheet(BuildContext context) async {
-    return showModalBottomSheet<String>(
+  // Sends a real m.location event (see ChatController.sendLocation) instead of the old plain-text
+  // "[Location]" marker body, so this renders correctly on cluborbit-web too.
+  Future<void> _handleLocationAttachment(ChatController controller) async {
+    final pick = await _showLocationComposerSheet(context);
+    if (pick == null || !mounted) {
+      return;
+    }
+
+    _composerController.clear();
+    _stopTyping(controller);
+    final sent = await controller.sendLocation(
+      lat: pick.lat,
+      lng: pick.lng,
+      label: pick.label,
+    );
+    if (!sent && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not send location.')),
+      );
+    }
+  }
+
+  // Sends a real org.cluborbit.contact event (see ChatController.sendContact) instead of the old
+  // plain-text "[Contact]" marker body, so this renders correctly on cluborbit-web too. The first
+  // phone/email go to the web-visible fields; the full picked contact (every number/email, avatar)
+  // still reaches mobile's own display via the bracket-text body (_StructuredContactCard).
+  Future<void> _handleContactAttachment(ChatController controller) async {
+    final pick = await _showContactComposerSheet(context);
+    if (pick == null || !mounted) {
+      return;
+    }
+
+    _composerController.clear();
+    _stopTyping(controller);
+    final sent = await controller.sendContact(
+      name: pick.name,
+      phone: pick.phones.isNotEmpty ? pick.phones.first : null,
+      email: pick.emails.isNotEmpty ? pick.emails.first : null,
+      rawBody: pick.bracketBody,
+    );
+    if (!sent && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not send contact.')),
+      );
+    }
+  }
+
+  Future<_LocationPick?> _showLocationComposerSheet(BuildContext context) async {
+    return showModalBottomSheet<_LocationPick>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -5222,8 +5275,8 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Future<String?> _showContactComposerSheet(BuildContext context) async {
-    return showModalBottomSheet<String>(
+  Future<_ContactPick?> _showContactComposerSheet(BuildContext context) async {
+    return showModalBottomSheet<_ContactPick>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,

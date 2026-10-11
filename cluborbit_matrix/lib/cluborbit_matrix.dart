@@ -1,6 +1,7 @@
 export 'package:clubcommon/clubcommon.dart';
 
 export 'src/config/playerchat_config.dart';
+export 'src/matrix_core/matrix_crypto_service.dart' show MatrixCryptoService;
 export 'src/matrix_core/matrix_rust_crypto_transport_client.dart';
 export 'src/matrix_core/matrix_transport_client.dart';
 export 'src/controllers/chat_controller.dart';
