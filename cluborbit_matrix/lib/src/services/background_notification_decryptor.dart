@@ -4,6 +4,7 @@ import 'dart:isolate';
 import 'dart:ui' show IsolateNameServer;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../matrix_core/matrix_crypto_service.dart';
@@ -59,6 +60,43 @@ class BackgroundNotificationDecryptor {
       );
     } catch (e) {
       debugPrint('[push-bg] failed to save session: $e');
+    }
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      await _saveForIosExtension(
+        homeserver: homeserver,
+        accessToken: accessToken,
+        userId: userId,
+        deviceId: deviceId,
+        passphrase: passphrase,
+      );
+    }
+  }
+
+  /// iOS can't run Flutter for a push while the app is closed; its notification service extension
+  /// (ios/NotificationService in the app) decrypts instead, with this same device and store. Hands
+  /// it the session through the app's `playerconnect/notifications` channel, which keeps it in the
+  /// keychain shared with the extension.
+  static Future<void> _saveForIosExtension({
+    required String homeserver,
+    required String accessToken,
+    required String userId,
+    required String deviceId,
+    required String passphrase,
+  }) async {
+    try {
+      await const MethodChannel('playerconnect/notifications').invokeMethod<void>(
+        'storeCryptoSession',
+        {
+          'homeserver': homeserver,
+          'accessToken': accessToken,
+          'userId': userId,
+          'deviceId': deviceId,
+          'passphrase': passphrase,
+          'storePath': await MatrixCryptoService.storePathFor(userId),
+        },
+      );
+    } catch (e) {
+      debugPrint('[push-bg] failed to hand session to the iOS extension: $e');
     }
   }
 

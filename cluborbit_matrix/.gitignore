@@ -20,3 +20,6 @@ ios/**/*.a
 # Local/IDE
 *.iml
 .idea/
+
+# iOS Rust framework - built locally by rust/build_ios.sh
+ios/Frameworks/

@@ -28,6 +28,55 @@ class MatrixCryptoService {
 
   static Future<void>? _nativeInit;
 
+  /// Where the app wants crypto stores kept instead of the app-support directory - on iOS the
+  /// App Group container, so the notification service extension can open the store and decrypt
+  /// pushes while the app is closed. Returns null to keep the default. Set by the app at startup.
+  static Future<String?> Function()? storeRootResolver;
+
+  static String? _storeRoot;
+
+  /// The directory holding every account's crypto store (`<root>/<userId>`). The first time a
+  /// [storeRootResolver] location is used, existing stores are moved there, so no keys are lost.
+  static Future<String> storeRoot() async {
+    final cached = _storeRoot;
+    if (cached != null) return cached;
+    final support = (await getApplicationSupportDirectory()).path;
+    final defaultRoot = '$support/matrix-crypto';
+    // Remembers a move, for isolates where the resolver isn't set.
+    final marker = File('$support/matrix-crypto.location');
+
+    String? custom;
+    try {
+      custom = (await storeRootResolver?.call())?.trim();
+    } catch (e) {
+      debugPrint('[crypto] store location lookup failed: $e');
+    }
+    if (custom == null || custom.isEmpty) {
+      final moved = await marker.exists() ? (await marker.readAsString()).trim() : '';
+      return _storeRoot = moved.isNotEmpty ? moved : defaultRoot;
+    }
+
+    final root = '$custom/matrix-crypto';
+    final legacy = Directory(defaultRoot);
+    if (root != defaultRoot && !await Directory(root).exists() && await legacy.exists()) {
+      try {
+        await Directory(custom).create(recursive: true);
+        await legacy.rename(root);
+        debugPrint('[crypto] moved crypto stores to $root');
+      } catch (e) {
+        debugPrint('[crypto] could not move crypto stores to $root, keeping $defaultRoot: $e');
+        return _storeRoot = defaultRoot;
+      }
+    }
+    await marker.writeAsString(root);
+    return _storeRoot = root;
+  }
+
+  /// This account's crypto store directory.
+  static Future<String> storePathFor(String userId) async =>
+      '${await storeRoot()}/$userId';
+
+
   static Future<void> _ensureNativeInitialized() =>
       _nativeInit ??= CluborbitMatrixNative.init().catchError((Object e) {
         _nativeInit = null;
@@ -54,8 +103,7 @@ class MatrixCryptoService {
       debugPrint('[crypto] timing: $phase at ${timer.elapsedMilliseconds} ms');
     }
 
-    final supportDir = await getApplicationSupportDirectory();
-    final storePath = '${supportDir.path}/matrix-crypto/$userId';
+    final storePath = await storePathFor(userId);
     // A closed-app push may be decrypting with this store right now (see
     // BackgroundNotificationDecryptor); two open sessions would each cache Olm state and could
     // overwrite the other's ratchet progress, so let it finish first.
@@ -396,8 +444,7 @@ class MatrixCryptoService {
         deviceId.isEmpty) {
       return false;
     }
-    final supportDir = await getApplicationSupportDirectory();
-    final storePath = '${supportDir.path}/matrix-crypto/$userId';
+    final storePath = await storePathFor(userId);
     if (!await Directory(storePath).exists()) return false;
     try {
       await _ensureNativeInitialized();
@@ -422,9 +469,7 @@ class MatrixCryptoService {
   /// keep sharing room keys to the old identity and nothing sent from here decrypts for them.
   static Future<bool> hasStoreForUser(String username) async {
     try {
-      final dir = Directory(
-        '${(await getApplicationSupportDirectory()).path}/matrix-crypto',
-      );
+      final dir = Directory(await storeRoot());
       if (!await dir.exists()) return false;
       final normalized = username.trim().toLowerCase();
       final prefix = normalized.startsWith('@') ? normalized : '@$normalized:';

@@ -97,6 +97,9 @@ class PushNotificationService {
   static const MethodChannel _nativeNotificationChannel = MethodChannel(
     'playerconnect/notifications',
   );
+  static const MethodChannel _presentationChannel = MethodChannel(
+    'playerconnect/notification_presentation',
+  );
   static const FlutterSecureStorage _secureStorage = chatSecureStorage;
 
   /// Set by the app: whether `roomId`'s chat is open on screen right now, in which case a push
@@ -330,6 +333,14 @@ class PushNotificationService {
       );
       await _registerToken(token.trim(), matrixUserId!);
     });
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      // AppDelegate asks before showing an extension-built notification in the foreground.
+      _presentationChannel.setMethodCallHandler((call) async {
+        if (call.method != 'isRoomOnScreen') return null;
+        final roomId = ((call.arguments as Map?)?['roomId'] ?? '').toString();
+        return roomId.isNotEmpty && (isRoomOnScreen?.call(roomId) ?? false);
+      });
+    }
     _foregroundMessageSubscription = FirebaseMessaging.onMessage.listen((
       message,
     ) {
@@ -337,9 +348,13 @@ class PushNotificationService {
       final onScreen =
           roomId.isNotEmpty && (isRoomOnScreen?.call(roomId) ?? false);
       // New-post pushes are drawn natively on Android in every app state (PostNotificationHelper).
+      // On iOS, pushes with an APNs alert were built by the NotificationService extension (avatars,
+      // decrypted text); AppDelegate shows that version instead (asking isRoomOnScreen below).
       final drawnNatively =
-          defaultTargetPlatform == TargetPlatform.android &&
-          isNativelyDrawnPostPush(message.data);
+          (defaultTargetPlatform == TargetPlatform.android &&
+              isNativelyDrawnPostPush(message.data)) ||
+          (defaultTargetPlatform == TargetPlatform.iOS &&
+              message.notification != null);
       unawaited(
         _handleIncomingMessage(
           message,
@@ -792,11 +807,7 @@ class PushNotificationService {
             ),
             subText: subText,
           ),
-          iOS: const DarwinNotificationDetails(
-            presentAlert: true,
-            presentBadge: true,
-            presentSound: true,
-          ),
+          iOS: _darwinDetails(message),
         ),
         payload: notificationPayload,
       );
@@ -905,11 +916,7 @@ class PushNotificationService {
             largeIcon: largeIcon,
             styleInformation: styleInformation,
           ),
-          iOS: const DarwinNotificationDetails(
-            presentAlert: true,
-            presentBadge: true,
-            presentSound: true,
-          ),
+          iOS: _darwinDetails(message, update: true),
         ),
         payload: payload,
       );
@@ -1002,11 +1009,7 @@ class PushNotificationService {
             styleInformation: styleInformation,
             subText: _notificationSubText(message),
           ),
-          iOS: const DarwinNotificationDetails(
-            presentAlert: true,
-            presentBadge: true,
-            presentSound: true,
-          ),
+          iOS: _darwinDetails(message, update: true),
         ),
         payload: payload,
       );
@@ -1124,6 +1127,27 @@ class PushNotificationService {
       orElse: () => DateTime.now().microsecondsSinceEpoch.toString(),
     );
     return resolved.hashCode & 0x7fffffff;
+  }
+
+  /// iOS presentation. Chat pushes get the CHAT_MESSAGE category, whose Reply action is handled
+  /// natively (ios/Runner/ChatNotifications.swift), and every notification for a room is grouped
+  /// under that room. `update` re-shows an existing notification (enriched or decrypted text)
+  /// without alerting a second time.
+  static DarwinNotificationDetails _darwinDetails(
+    RemoteMessage message, {
+    bool update = false,
+  }) {
+    final roomId = (message.data['room_id'] ?? '').toString().trim();
+    final isChat = roomId.isNotEmpty && _isLikelyMatrixNotification(message);
+    return DarwinNotificationDetails(
+      presentAlert: !update,
+      presentBanner: !update,
+      presentList: true,
+      presentBadge: true,
+      presentSound: !update,
+      categoryIdentifier: isChat ? 'CHAT_MESSAGE' : null,
+      threadIdentifier: roomId.isNotEmpty ? roomId : null,
+    );
   }
 
   static String _notificationPayload(RemoteMessage message) {

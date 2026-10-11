@@ -24,6 +24,12 @@ class PlayerUiSearchBar extends StatefulWidget {
 }
 
 class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
+  static const Color _fillColor = Color(0xFF1E2942);
+  static final OutlineInputBorder _noOutline = OutlineInputBorder(
+    borderRadius: BorderRadius.circular(14),
+    borderSide: BorderSide.none,
+  );
+
   late final TextEditingController _controller;
   late final FocusNode _focusNode;
   Timer? _debounceTimer;
@@ -95,15 +101,11 @@ class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
                     },
                     icon: Icon(Icons.clear, color: widget.accentColor),
                   ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: widget.accentColor, width: 2),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: widget.accentColor, width: 2),
-            ),
-            fillColor: Colors.white.withAlpha(16),
+            // No outline: a solid, lighter-navy fill sets the field apart from the background.
+            border: _noOutline,
+            enabledBorder: _noOutline,
+            focusedBorder: _noOutline,
+            fillColor: _fillColor,
             filled: true,
           ),
         ),

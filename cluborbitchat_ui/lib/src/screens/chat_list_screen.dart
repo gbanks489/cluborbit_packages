@@ -1076,6 +1076,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
         else
           ...users.map(
             (u) => ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+              horizontalTitleGap: 10,
               leading: _AvatarThumb(
                 imageUrl: u.avatarUrl,
                 initials: u.displayName.isEmpty
@@ -1136,6 +1138,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
         shareMode && _shareSelectedThreadIds.contains(thread.id);
 
     return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+      horizontalTitleGap: 10,
       tileColor: selectedForShare
           ? PlayerUiSignalTheme.primaryDarkColor.withAlpha(40)
           : PlayerUiSignalTheme.mobileSearchColor.withAlpha(90),

@@ -57,3 +57,10 @@ base64 = "0.22"
 # generation) — declared directly here too since a crate can only `use` its own direct
 # dependencies, not ones pulled in transitively by another crate.
 rand = "0.8"
+
+# iOS only: libc 0.2.178+ restricts the _dyld_* functions to macOS, which breaks the `backtrace`
+# crate (pulled in by flutter_rust_bridge -> allo-isolate) when compiling for iOS. Pinning libc here
+# forces the whole dependency tree onto a version that still exposes them on iOS. Revisit when
+# backtrace or libc fixes it upstream.
+[target.'cfg(target_os = "ios")'.dependencies]
+libc = "=0.2.177"

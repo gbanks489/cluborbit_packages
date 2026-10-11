@@ -66,6 +66,9 @@ flutter:
       android:
         package: com.cluborbit.matrix
         pluginClass: CluborbitMatrixPlugin
+      # iOS only bundles the Rust crypto framework (ios/cluborbit_matrix.podspec).
+      ios:
+        ffiPlugin: true
   assets:
     - assets/images/
 

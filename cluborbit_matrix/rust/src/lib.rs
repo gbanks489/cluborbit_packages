@@ -23,6 +23,8 @@
 mod frb_generated;
 mod attachment_crypto;
 mod secret_storage;
+// C entry points for the iOS notification service extension (not part of the Dart API).
+mod nse;
 
 use matrix_sdk_crypto::olm::{BackedUpRoomKey, EncryptionSettings};
 use matrix_sdk_crypto::store::types::{BackupDecryptionKey, CrossSigningKeyExport};
