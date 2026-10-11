@@ -418,18 +418,11 @@ class _LocationAttachmentSheetState extends State<_LocationAttachmentSheet> {
     }
 
     final title = _titleController.text.trim();
-    final lat = loc.latitude.toStringAsFixed(6);
-    final lng = loc.longitude.toStringAsFixed(6);
-    final link = 'https://www.openstreetmap.org/?mlat=$lat&mlon=$lng&zoom=15';
-    final mapImage =
-        'https://staticmap.openstreetmap.de/staticmap.php?center=$lat,$lng&zoom=15&size=600x300&markers=$lat,$lng,red-pushpin';
-
-    final lines = <String>['[Location]'];
-    lines.add(title.isNotEmpty ? title : 'Shared location');
-    lines.add('Map: $link');
-    lines.add('Image: $mapImage');
-
-    Navigator.of(context).pop(lines.join('\n'));
+    Navigator.of(context).pop<_LocationPick>((
+      lat: loc.latitude,
+      lng: loc.longitude,
+      label: title.isEmpty ? null : title,
+    ));
   }
 
   @override
@@ -655,7 +648,17 @@ class _ContactAttachmentSheetState extends State<_ContactAttachmentSheet> {
         lines.add('AvatarBase64: ${base64Encode(avatarBytes)}');
       }
 
-      Navigator.of(context).pop(lines.join('\n'));
+      if (name.isEmpty) {
+        setState(() => _loading = false);
+        return;
+      }
+
+      Navigator.of(context).pop<_ContactPick>((
+        name: name,
+        phones: phones,
+        emails: emails,
+        bracketBody: lines.join('\n'),
+      ));
     } catch (e) {
       if (mounted) {
         setState(() {

@@ -22,6 +22,10 @@ class MatrixCryptoService {
 
   bool get isReady => _session != null;
 
+  /// Where the open store lives on disk, once [initialize] or [openExistingStore] has opened it.
+  String? get storePath => _session == null ? null : _storePath;
+  String? _storePath;
+
   /// True when this launch created a brand-new store (first run, or the old one was set aside),
   /// meaning any message decrypted before now was decrypted without this store's keys.
   bool createdFreshStore = false;
@@ -104,6 +108,7 @@ class MatrixCryptoService {
     }
 
     final storePath = await storePathFor(userId);
+    _storePath = storePath;
     // A closed-app push may be decrypting with this store right now (see
     // BackgroundNotificationDecryptor); two open sessions would each cache Olm state and could
     // overwrite the other's ratchet progress, so let it finish first.
@@ -445,6 +450,7 @@ class MatrixCryptoService {
       return false;
     }
     final storePath = await storePathFor(userId);
+    _storePath = storePath;
     if (!await Directory(storePath).exists()) return false;
     try {
       await _ensureNativeInitialized();

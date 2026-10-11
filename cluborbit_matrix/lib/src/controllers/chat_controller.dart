@@ -1312,6 +1312,64 @@ class ChatController extends ChangeNotifier {
     );
   }
 
+  /// Shares a real location pin (matches cluborbit-web's sendLocationMessage - see
+  /// MatrixRestService.sendLocationMessage for the wire shape both clients now use).
+  Future<bool> sendLocation({
+    required double lat,
+    required double lng,
+    String? label,
+  }) async {
+    final roomId = _activeRoomId;
+    if (roomId == null) {
+      _errorNotifier.setError('No active chat room — please re-open the chat.');
+      return false;
+    }
+    try {
+      await _matrixService.sendLocationMessage(
+        roomId: roomId,
+        lat: lat,
+        lng: lng,
+        label: label,
+      );
+      await openRoom(roomId, roomTitle: _activeRoomTitle);
+      return true;
+    } catch (e, s) {
+      debugPrint('[ChatController] sendLocation failed: $e\n$s');
+      _errorNotifier.setError(e.toString());
+      return false;
+    }
+  }
+
+  /// Shares a contact card (matches cluborbit-web's sendContactMessage - see
+  /// MatrixRestService.sendContactMessage for the wire shape both clients now use).
+  Future<bool> sendContact({
+    required String name,
+    String? phone,
+    String? email,
+    String? rawBody,
+  }) async {
+    final roomId = _activeRoomId;
+    if (roomId == null) {
+      _errorNotifier.setError('No active chat room — please re-open the chat.');
+      return false;
+    }
+    try {
+      await _matrixService.sendContactMessage(
+        roomId: roomId,
+        name: name,
+        phone: phone,
+        email: email,
+        rawBody: rawBody,
+      );
+      await openRoom(roomId, roomTitle: _activeRoomTitle);
+      return true;
+    } catch (e, s) {
+      debugPrint('[ChatController] sendContact failed: $e\n$s');
+      _errorNotifier.setError(e.toString());
+      return false;
+    }
+  }
+
   Future<void> sendEmoji(String emoji) async {
     final roomId = _activeRoomId;
     if (roomId == null || emoji.trim().isEmpty) {

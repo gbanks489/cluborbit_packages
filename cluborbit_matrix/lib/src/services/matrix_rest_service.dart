@@ -738,6 +738,7 @@ class MatrixRestService {
             userId: userId,
             deviceId: deviceId,
             passphrase: password,
+            storePath: crypto!.storePath,
           ),
         );
       }
@@ -1542,6 +1543,17 @@ class MatrixRestService {
                       '')
                   .toString(),
         },
+        // Web's org.cluborbit.contact (see cluborbit-web's ChatContext.sendContactMessage) -
+        // mobile's own send also sets a "[Contact]" body so _StructuredContactCard (the existing
+        // bracket-text renderer) handles display without a dedicated metadata-driven widget; these
+        // fields are kept for parity/future use and so a contact sent without that body still has
+        // its data available.
+        if ((content['msgtype'] ?? '').toString() ==
+            'org.cluborbit.contact') ...<String, dynamic>{
+          'name': (content['name'] ?? '').toString(),
+          'phone': (content['phone'] ?? '').toString(),
+          'email': (content['email'] ?? '').toString(),
+        },
         'reactions': reactionEvents
             .map((entry) => (entry['key'] ?? '').toString())
             .toList(growable: false),
@@ -1708,6 +1720,149 @@ class MatrixRestService {
       text: emoji,
       replyToEventId: replyToEventId,
     );
+  }
+
+  /// Sends a real Matrix m.location event (MSC3488 shape), matching what cluborbit-web's
+  /// ChatContext.sendLocationMessage sends - so a location shared from either client renders
+  /// correctly on the other. Mobile's own display uses the existing geo_uri-driven map card
+  /// (see ChatScreen._locationOf/_buildLocationMessageContent) rather than a body-text marker.
+  Future<String> sendLocationMessage({
+    required String roomId,
+    required double lat,
+    required double lng,
+    String? label,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    await initialize();
+    final trimmedLabel = label?.trim();
+    final geoUri = 'geo:$lat,$lng';
+    final body = (trimmedLabel != null && trimmedLabel.isNotEmpty)
+        ? '📍 $trimmedLabel'
+        : '📍 Location (${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)})';
+    final content = <String, dynamic>{
+      'msgtype': 'm.location',
+      'body': body,
+      'geo_uri': geoUri,
+      'org.matrix.msc3488.location': <String, dynamic>{
+        'uri': geoUri,
+        if (trimmedLabel != null && trimmedLabel.isNotEmpty)
+          'description': trimmedLabel,
+      },
+    };
+    final eventId = await _sendRoomEvent(
+      roomId: roomId,
+      eventType: 'm.room.message',
+      content: content,
+    );
+    final now = DateTime.now();
+    _updateLocalThreadPreviewAfterSend(
+      roomId: roomId,
+      previewBody: 'Shared a location',
+      createdAt: now,
+    );
+    _appendOptimisticCachedMessage(
+      roomId: roomId,
+      message: ChatMessage(
+        id: eventId,
+        roomId: roomId,
+        senderId: (currentUserId ?? '').trim(),
+        senderName: 'You',
+        body: body,
+        kind: MessageKind.text,
+        createdAt: now,
+        metadata: <String, dynamic>{
+          'sendStage': 'sent',
+          'geoUri': geoUri,
+          'locationDescription': trimmedLabel ?? '',
+        },
+      ),
+    );
+    await _persistCache();
+    _perfLog('sendLocationMessage', stopwatch, <String, Object?>{
+      'roomId': roomId,
+    });
+    return eventId;
+  }
+
+  /// Sends a real Matrix org.cluborbit.contact event, matching cluborbit-web's
+  /// ChatContext.sendContactMessage. The body also carries the "[Contact]" marker mobile's own
+  /// bracket-text parser (_parseStructuredMessage) already recognizes, so this renders through the
+  /// existing _StructuredContactCard on mobile without a new metadata-driven widget, while the
+  /// top-level name/phone/email fields are what the web client reads.
+  Future<String> sendContactMessage({
+    required String roomId,
+    required String name,
+    String? phone,
+    String? email,
+    // The full multi-phone/email/avatar body from the native contacts picker, already formatted
+    // as "[Contact]\n..." - used verbatim when given so mobile's own _StructuredContactCard still
+    // shows everything the picker found, even though only the first phone/email (above) are what
+    // the web client reads from the real event fields.
+    String? rawBody,
+  }) async {
+    final trimmedName = name.trim();
+    if (trimmedName.isEmpty) {
+      throw ArgumentError('Contact name is required');
+    }
+    final stopwatch = Stopwatch()..start();
+    await initialize();
+    final trimmedPhone = phone?.trim();
+    final trimmedEmail = email?.trim();
+    final trimmedRawBody = rawBody?.trim();
+    String body;
+    if (trimmedRawBody != null && trimmedRawBody.isNotEmpty) {
+      body = trimmedRawBody;
+    } else {
+      final lines = <String>['[Contact]', 'Name: $trimmedName'];
+      if (trimmedPhone != null && trimmedPhone.isNotEmpty) {
+        lines.add('Phone: $trimmedPhone');
+      }
+      if (trimmedEmail != null && trimmedEmail.isNotEmpty) {
+        lines.add('Email: $trimmedEmail');
+      }
+      body = lines.join('\n');
+    }
+    final content = <String, dynamic>{
+      'msgtype': 'org.cluborbit.contact',
+      'body': body,
+      'name': trimmedName,
+      if (trimmedPhone != null && trimmedPhone.isNotEmpty) 'phone': trimmedPhone,
+      if (trimmedEmail != null && trimmedEmail.isNotEmpty) 'email': trimmedEmail,
+    };
+    final eventId = await _sendRoomEvent(
+      roomId: roomId,
+      eventType: 'm.room.message',
+      content: content,
+    );
+    final now = DateTime.now();
+    _updateLocalThreadPreviewAfterSend(
+      roomId: roomId,
+      previewBody: '👤 $trimmedName',
+      createdAt: now,
+    );
+    _appendOptimisticCachedMessage(
+      roomId: roomId,
+      message: ChatMessage(
+        id: eventId,
+        roomId: roomId,
+        senderId: (currentUserId ?? '').trim(),
+        senderName: 'You',
+        body: body,
+        kind: MessageKind.text,
+        createdAt: now,
+        metadata: <String, dynamic>{
+          'sendStage': 'sent',
+          'name': trimmedName,
+          'phone': trimmedPhone ?? '',
+          'email': trimmedEmail ?? '',
+        },
+      ),
+    );
+    await _persistCache();
+    _perfLog('sendContactMessage', stopwatch, <String, Object?>{
+      'roomId': roomId,
+    });
+    return eventId;
   }
 
   ChatMessage createOptimisticTextMessage({
