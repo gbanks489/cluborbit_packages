@@ -15,6 +15,9 @@ class MatrixRestCacheSnapshot {
     required this.updatedAtMs,
     required this.lastMessageSenderByRoom,
     required this.lastMessagePreviewByRoom,
+    this.canonicalAliasByRoom = const <String, String>{},
+    this.roomTypeByRoom = const <String, String>{},
+    this.roomTagByRoom = const <String, String>{},
   });
 
   final String? sinceToken;
@@ -27,6 +30,9 @@ class MatrixRestCacheSnapshot {
   final int updatedAtMs;
   final Map<String, String> lastMessageSenderByRoom;
   final Map<String, String> lastMessagePreviewByRoom;
+  final Map<String, String> canonicalAliasByRoom;
+  final Map<String, String> roomTypeByRoom;
+  final Map<String, String> roomTagByRoom;
 }
 
 class MatrixRestCacheStore {
@@ -191,6 +197,16 @@ class MatrixRestCacheStore {
         }
       }
 
+      Map<String, String> stringMap(dynamic raw) => <String, String>{
+        if (raw is Map)
+          for (final e in raw.entries)
+            if (e.key.toString().isNotEmpty)
+              e.key.toString(): e.value?.toString() ?? '',
+      };
+      final canonicalAliasByRoom = stringMap(decoded['canonicalAliasByRoom']);
+      final roomTypeByRoom = stringMap(decoded['roomTypeByRoom']);
+      final roomTagByRoom = stringMap(decoded['roomTagByRoom']);
+
       return MatrixRestCacheSnapshot(
         sinceToken: sinceToken,
         threads: threads,
@@ -202,6 +218,9 @@ class MatrixRestCacheStore {
         updatedAtMs: updatedAtMs,
         lastMessageSenderByRoom: lastMessageSenderByRoom,
         lastMessagePreviewByRoom: lastMessagePreviewByRoom,
+        canonicalAliasByRoom: canonicalAliasByRoom,
+        roomTypeByRoom: roomTypeByRoom,
+        roomTagByRoom: roomTagByRoom,
       );
     } catch (_) {
       return null;
@@ -220,6 +239,9 @@ class MatrixRestCacheStore {
     required Map<String, dynamic>? callSnapshot,
     required Map<String, String> lastMessageSenderByRoom,
     required Map<String, String> lastMessagePreviewByRoom,
+    Map<String, String> canonicalAliasByRoom = const <String, String>{},
+    Map<String, String> roomTypeByRoom = const <String, String>{},
+    Map<String, String> roomTagByRoom = const <String, String>{},
   }) async {
     final payload = <String, dynamic>{
       'sinceToken': sinceToken,
@@ -252,6 +274,9 @@ class MatrixRestCacheStore {
       'callSnapshot': callSnapshot,
       'lastMessageSenderByRoom': lastMessageSenderByRoom,
       'lastMessagePreviewByRoom': lastMessagePreviewByRoom,
+      'canonicalAliasByRoom': canonicalAliasByRoom,
+      'roomTypeByRoom': roomTypeByRoom,
+      'roomTagByRoom': roomTagByRoom,
     };
     await _storage.write(
       key: _key(databaseName: databaseName, userId: userId),

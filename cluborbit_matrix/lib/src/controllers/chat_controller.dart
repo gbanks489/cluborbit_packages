@@ -280,6 +280,14 @@ class ChatController extends ChangeNotifier {
   Future<String?> resolveNotificationBody(String roomId, String eventId) =>
       _matrixService.resolveNotificationBody(roomId, eventId);
 
+  /// The room's tag, alias and creation type - what ties it to a place, group or event (see
+  /// MatrixRestService.roomLink). Fetched once when not yet known.
+  Future<({String? alias, String? type, String? tag})> roomLink(String roomId) =>
+      _matrixService.roomLink(roomId);
+
+  ({String? alias, String? type, String? tag}) cachedRoomLink(String roomId) =>
+      _matrixService.cachedRoomLink(roomId);
+
   String? cachedRoomAvatarUrl(String roomId) =>
       _matrixService.cachedRoomAvatarUrl(roomId);
 

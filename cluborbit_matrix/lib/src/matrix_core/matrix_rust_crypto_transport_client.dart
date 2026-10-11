@@ -214,6 +214,15 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
   }
 
   @override
+  Future<Map<String, dynamic>> getRoomStateEvent(
+    String roomId,
+    String eventType, {
+    String stateKey = '',
+  }) {
+    return _fallback.getRoomStateEvent(roomId, eventType, stateKey: stateKey);
+  }
+
+  @override
   Future<String> resolveRoomAlias(String roomAlias) {
     return _fallback.resolveRoomAlias(roomAlias);
   }

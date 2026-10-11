@@ -199,6 +199,14 @@ class MatrixRestService {
       <String, ChatUserPresence>{};
   final Map<String, DateTime> _presenceCacheAt = <String, DateTime>{};
   final Map<String, String> _lastMessagePreviewByRoom = <String, String>{};
+  // Each room's m.room.canonical_alias, m.room.create `type` and org.cluborbit.room `type`
+  // ('' = the room has none), so the app can tell which place, group or event a chat belongs to.
+  // Persisted with the rest of the cache; see roomLink.
+  final Map<String, String> _canonicalAliasByRoom = <String, String>{};
+  final Map<String, String> _roomTypeByRoom = <String, String>{};
+  final Map<String, String> _roomTagByRoom = <String, String>{};
+  final Map<String, Future<({String? alias, String? type, String? tag})>> _roomLinkLookups =
+      <String, Future<({String? alias, String? type, String? tag})>>{};
   final Map<String, String> _lastMessageSenderByRoom = <String, String>{};
   final Map<String, String> _lastMessageSenderIdByRoom = <String, String>{};
   final Map<String, DateTime> _lastMessageTimeByRoom = <String, DateTime>{};
@@ -300,6 +308,94 @@ class MatrixRestService {
   RTCVideoRenderer? get localVideoRenderer => _localVideoRenderer;
   RTCVideoRenderer? get remoteVideoRenderer => _remoteVideoRenderer;
   MatrixTransportCapabilities get transportCapabilities => _core.capabilities;
+
+  /// What links a room to a place, group or event: the server's `org.cluborbit.room` tag (`place`,
+  /// `group`, `event`), plus - for rooms not tagged yet - its canonical alias (`#<uid>:server`,
+  /// the entity's roomAlias) and the `type` the server gave it at creation (`Place`, `Group`,
+  /// `Event`, or `Club` on older rooms). Each is null when the room has none or it isn't known
+  /// yet; see [roomLink] to look them up.
+  ({String? alias, String? type, String? tag}) cachedRoomLink(String roomId) {
+    final id = roomId.trim();
+    String? orNull(String? value) =>
+        (value == null || value.isEmpty) ? null : value;
+    return (
+      alias: orNull(_canonicalAliasByRoom[id]),
+      type: orNull(_roomTypeByRoom[id]),
+      tag: orNull(_roomTagByRoom[id]),
+    );
+  }
+
+  /// [cachedRoomLink], fetching whichever part isn't known yet (rooms restored from an older
+  /// cache, or whose state came without it) once.
+  Future<({String? alias, String? type, String? tag})> roomLink(String roomId) {
+    final id = roomId.trim();
+    if (id.isEmpty ||
+        (_canonicalAliasByRoom.containsKey(id) &&
+            _roomTypeByRoom.containsKey(id) &&
+            _roomTagByRoom.containsKey(id))) {
+      return Future.value(cachedRoomLink(id));
+    }
+    return _roomLinkLookups[id] ??= () async {
+      try {
+        if (!_roomTagByRoom.containsKey(id)) {
+          final tag = await _fetchStateField(id, 'org.cluborbit.room', 'type');
+          if (tag != null) _roomTagByRoom[id] = tag;
+        }
+        if (!_canonicalAliasByRoom.containsKey(id)) {
+          final alias = await _fetchStateField(
+            id,
+            'm.room.canonical_alias',
+            'alias',
+          );
+          if (alias != null) _canonicalAliasByRoom[id] = alias;
+        }
+        if (!_roomTypeByRoom.containsKey(id)) {
+          final type = await _fetchStateField(id, 'm.room.create', 'type');
+          if (type != null) _roomTypeByRoom[id] = type;
+        }
+        unawaited(_persistCache());
+        return cachedRoomLink(id);
+      } finally {
+        _roomLinkLookups.remove(id);
+      }
+    }();
+  }
+
+  /// One field of a room state event: '' when the room doesn't have the event or field, null
+  /// when it couldn't be read (offline, rate limited - retried on the next lookup).
+  Future<String?> _fetchStateField(
+    String roomId,
+    String eventType,
+    String field,
+  ) async {
+    try {
+      final content = await _core.getRoomStateEvent(roomId, eventType);
+      return (content[field] ?? '').toString().trim();
+    } on StateError catch (e) {
+      return e.message.contains('[M_NOT_FOUND]') ? '' : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Records the room's alias and creation type when this state includes them.
+  void _captureRoomLink(String roomId, List<dynamic> stateEvents) {
+    for (final event in stateEvents.map(_asMap)) {
+      if ((event['state_key'] ?? '').toString().isNotEmpty) continue;
+      final content = _asMap(event['content']);
+      switch ((event['type'] ?? '').toString()) {
+        case 'm.room.canonical_alias':
+          _canonicalAliasByRoom[roomId] = (content['alias'] ?? '')
+              .toString()
+              .trim();
+        case 'm.room.create':
+          _roomTypeByRoom[roomId] = (content['type'] ?? '').toString().trim();
+        case 'org.cluborbit.room':
+          _roomTagByRoom[roomId] = (content['type'] ?? '').toString().trim();
+      }
+    }
+  }
+
   String? cachedRoomAvatarUrl(String roomId) {
     final normalizedRoomId = roomId.trim();
     if (normalizedRoomId.isEmpty) {
@@ -1826,8 +1922,10 @@ class MatrixRestService {
       'msgtype': 'org.cluborbit.contact',
       'body': body,
       'name': trimmedName,
-      if (trimmedPhone != null && trimmedPhone.isNotEmpty) 'phone': trimmedPhone,
-      if (trimmedEmail != null && trimmedEmail.isNotEmpty) 'email': trimmedEmail,
+      if (trimmedPhone != null && trimmedPhone.isNotEmpty)
+        'phone': trimmedPhone,
+      if (trimmedEmail != null && trimmedEmail.isNotEmpty)
+        'email': trimmedEmail,
     };
     final eventId = await _sendRoomEvent(
       roomId: roomId,
@@ -3709,6 +3807,9 @@ class MatrixRestService {
   }
 
   Future<void> _hydrateCache(String userId) async {
+    _canonicalAliasByRoom.clear();
+    _roomTypeByRoom.clear();
+    _roomTagByRoom.clear();
     try {
       final snapshot = await _cacheStore.load(
         databaseName: databaseName,
@@ -3747,6 +3848,9 @@ class MatrixRestService {
       _lastMessagePreviewByRoom
         ..clear()
         ..addAll(snapshot.lastMessagePreviewByRoom);
+      _canonicalAliasByRoom.addAll(snapshot.canonicalAliasByRoom);
+      _roomTypeByRoom.addAll(snapshot.roomTypeByRoom);
+      _roomTagByRoom.addAll(snapshot.roomTagByRoom);
 
       // Fix "You:" prefix: scan persisted messages to detect own last messages.
       // This handles the case where no new sync event arrives for a room, so
@@ -3822,6 +3926,9 @@ class MatrixRestService {
         lastMessagePreviewByRoom: Map<String, String>.from(
           _lastMessagePreviewByRoom,
         ),
+        canonicalAliasByRoom: Map<String, String>.from(_canonicalAliasByRoom),
+        roomTypeByRoom: Map<String, String>.from(_roomTypeByRoom),
+        roomTagByRoom: Map<String, String>.from(_roomTagByRoom),
       );
     } catch (_) {
       // Cache writes are best-effort.
@@ -4655,7 +4762,8 @@ class MatrixRestService {
     for (final entry in joined.entries) {
       final roomId = entry.key.toString();
       final thread = byId[roomId];
-      if (thread == null || _hasUsefulThreadTitle(thread.title, roomId)) continue;
+      if (thread == null || _hasUsefulThreadTitle(thread.title, roomId))
+        continue;
       final lastTry = _roomStateBackfillAt[roomId];
       if (lastTry != null &&
           DateTime.now().difference(lastTry) < const Duration(seconds: 30)) {
@@ -4669,7 +4777,10 @@ class MatrixRestService {
       var avatarUrl = _roomAvatarUrl(stateEvents) ?? thread.avatarUrl;
       final isDm = _isLikelyDm(stateEvents);
       if (isDm) {
-        final counterpart = _directMessageCounterpartForRoom(roomId, stateEvents);
+        final counterpart = _directMessageCounterpartForRoom(
+          roomId,
+          stateEvents,
+        );
         if (counterpart != null) {
           title = counterpart.displayName;
           avatarUrl = counterpart.avatarUrl ?? avatarUrl;
@@ -5017,6 +5128,7 @@ class MatrixRestService {
     String roomId,
     List<dynamic> stateEvents,
   ) {
+    _captureRoomLink(roomId, stateEvents);
     final participants = _participantsFromStateEvents(stateEvents);
     if (participants.isEmpty) {
       return;
@@ -5038,9 +5150,14 @@ class MatrixRestService {
 
   /// A member's role from the room's power levels: 100 is an admin (what the server gives
   /// club/group/event admins and the cluborbit bot), 50 a moderator, anything lower a member.
-  ChatMemberLevel _memberLevel(Map<String, dynamic> powerLevels, String userId) {
+  ChatMemberLevel _memberLevel(
+    Map<String, dynamic> powerLevels,
+    String userId,
+  ) {
     final users = _asMap(powerLevels['users']);
-    final raw = users.containsKey(userId) ? users[userId] : powerLevels['users_default'];
+    final raw = users.containsKey(userId)
+        ? users[userId]
+        : powerLevels['users_default'];
     final level = raw is num ? raw.toInt() : int.tryParse('${raw ?? 0}') ?? 0;
     if (level >= 100) return ChatMemberLevel.admin;
     if (level >= 50) return ChatMemberLevel.moderator;

@@ -11,10 +11,22 @@ import 'package:cluborbit_models/cluborbit_models.dart';
 import 'package:provider/provider.dart';
 
 import '../app/playerchat_router.dart';
+import '../config/chat_room_category.dart';
 import 'user_profile_view_screen.dart';
 import '../widgets/playerui_search_bar.dart';
 
 enum _ThreadAction { mute, unmute, pin, unpin, leave, markUnread }
+
+enum _ChatListFilter {
+  all('All'),
+  direct('Direct'),
+  places('Places'),
+  groups('Groups'),
+  events('Events');
+
+  const _ChatListFilter(this.label);
+  final String label;
+}
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({
@@ -46,6 +58,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
   // screen with the same files - without this, the "Select a chat to share" state came back after
   // every share.
   static final Set<String> _consumedSharePaths = <String>{};
+
+  // Kept across rebuilds of this screen (the /rooms route recreates it on every visit).
+  static _ChatListFilter _filter = _ChatListFilter.all;
 
   static String _sharePath(Map<String, String?> item) =>
       (item['path'] ?? '').trim();
@@ -914,6 +929,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       title: 'users and chats',
                       accentColor: PlayerUiSignalTheme.primaryDarkColor,
                     ),
+                    if (_categoryResolver(context) case final resolver?) ...[
+                      const SizedBox(height: 12),
+                      _buildFilterChips(controller, resolver),
+                    ],
                     const SizedBox(height: 16),
                     if (_pendingShareFiles.isNotEmpty) ...[
                       Container(
@@ -1026,12 +1045,150 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
+  /// The host app's resolver, watched so the list updates as categories become known; null
+  /// when the app doesn't provide one (no filters then).
+  ChatRoomCategoryResolver? _categoryResolver(BuildContext context) {
+    try {
+      return context.watch<ChatRoomCategoryResolver>();
+    } on ProviderNotFoundException {
+      return null;
+    }
+  }
+
+  bool _matchesFilter(
+    ChatThread thread,
+    _ChatListFilter filter,
+    ChatRoomCategoryResolver resolver,
+  ) {
+    if (filter == _ChatListFilter.all) return true;
+    if (thread.type == ChatType.dm) return filter == _ChatListFilter.direct;
+    final category = resolver.categoryFor(thread);
+    return switch (filter) {
+      _ChatListFilter.places => category == ChatRoomCategory.place,
+      // Plain group chats (not linked to a place or event) count as groups too.
+      _ChatListFilter.groups =>
+        category == ChatRoomCategory.group ||
+            category == ChatRoomCategory.groupChat,
+      _ChatListFilter.events => category == ChatRoomCategory.event,
+      _ => false,
+    };
+  }
+
+  Widget _buildFilterChips(
+    ChatController controller,
+    ChatRoomCategoryResolver resolver,
+  ) {
+    final threads = controller.threads;
+    return SizedBox(
+      height: 36,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: _ChatListFilter.values.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final filter = _ChatListFilter.values[index];
+          final selected = filter == _filter;
+          final unread = filter == _ChatListFilter.all
+              ? 0
+              : threads
+                    .where((t) => _matchesFilter(t, filter, resolver))
+                    .fold<int>(0, (sum, t) => sum + t.unreadCount);
+          final foreground = selected
+              ? PlayerUiSignalTheme.secondaryColor
+              : PlayerUiSignalTheme.primaryDarkColor;
+          return Material(
+            color: selected
+                ? PlayerUiSignalTheme.primaryDarkColor
+                : PlayerUiSignalTheme.primaryDarkColor.withAlpha(24),
+            shape: StadiumBorder(
+              side: BorderSide(
+                color: PlayerUiSignalTheme.primaryDarkColor.withAlpha(
+                  selected ? 255 : 90,
+                ),
+              ),
+            ),
+            child: InkWell(
+              customBorder: const StadiumBorder(),
+              onTap: () => setState(() => _filter = filter),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      filter.label,
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: foreground,
+                      ),
+                    ),
+                    if (unread > 0) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        constraints: const BoxConstraints(minWidth: 18),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: foreground,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          unread > 99 ? '99+' : '$unread',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontFamily: 'Poppins',
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: selected
+                                ? PlayerUiSignalTheme.primaryDarkColor
+                                : PlayerUiSignalTheme.secondaryColor,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildResultsList(BuildContext context, ChatController controller) {
     final showUsers = controller.query.trim().isNotEmpty;
-    final threads = controller.threads;
+    final resolver = _categoryResolver(context);
+    final threads = resolver == null || _filter == _ChatListFilter.all
+        ? controller.threads
+        : controller.threads
+              .where((t) => _matchesFilter(t, _filter, resolver))
+              .toList(growable: false);
     final users = controller.searchedUsers;
 
     if (!showUsers) {
+      if (threads.isEmpty && _filter != _ChatListFilter.all) {
+        return ListView(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 48),
+              child: Text(
+                'No ${_filter.label.toLowerCase()} chats',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontFamily: 'Poppins',
+                  fontSize: 14,
+                  color: PlayerUiSignalTheme.primaryDarkColor,
+                ),
+              ),
+            ),
+          ],
+        );
+      }
       return ListView.separated(
         itemCount: threads.length,
         separatorBuilder: (context, index) => const Divider(height: 1),

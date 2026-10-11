@@ -84,6 +84,13 @@ abstract class MatrixTransportClient {
   Future<Map<String, dynamic>> getPresenceStatus(String userId);
   Future<Map<String, dynamic>> getState(String roomId);
   Future<List<dynamic>> getStateEvents(String roomId);
+
+  /// One state event's content; throws a `[M_NOT_FOUND]` StateError when the room doesn't have it.
+  Future<Map<String, dynamic>> getRoomStateEvent(
+    String roomId,
+    String eventType, {
+    String stateKey = '',
+  });
   Future<String> resolveRoomAlias(String roomAlias);
   Future<Map<String, dynamic>> getMembers(String roomId);
   Future<void> joinRoom(String roomId);

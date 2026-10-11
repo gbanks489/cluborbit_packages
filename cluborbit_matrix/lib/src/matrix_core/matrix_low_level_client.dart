@@ -382,6 +382,21 @@ class MatrixLowLevelClient implements MatrixTransportClient {
     );
   }
 
+  @override
+  Future<Map<String, dynamic>> getRoomStateEvent(
+    String roomId,
+    String eventType, {
+    String stateKey = '',
+  }) {
+    final encodedType = Uri.encodeComponent(eventType);
+    final encodedKey = Uri.encodeComponent(stateKey);
+    return _requestJson(
+      method: 'GET',
+      uri: _clientUri('/rooms/$roomId/state/$encodedType/$encodedKey'),
+      headers: _authHeaders(json: false),
+    );
+  }
+
   Future<List<dynamic>> getStateEvents(String roomId) async {
     if (_disposed) {
       throw StateError('Matrix HTTP client is disposed');

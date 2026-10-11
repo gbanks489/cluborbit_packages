@@ -2,6 +2,7 @@ export 'package:clubcommon/clubcommon.dart';
 export 'package:cluborbit_models/cluborbit_models.dart';
 
 export 'src/app/playerchat_app.dart';
+export 'src/config/chat_room_category.dart';
 export 'src/config/playerchat_config.dart';
 export 'src/screens/call_settings_screen.dart';
 export 'src/screens/chat_details_screen.dart';
