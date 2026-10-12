@@ -11,6 +11,7 @@ class PlayerUiSearchBar extends StatefulWidget {
     this.title = 'chats and users',
     this.accentColor = PlayerUiSignalTheme.secondaryColor,
     this.debounceDuration = const Duration(milliseconds: 220),
+    this.trailing,
   });
 
   final TextEditingController? controller;
@@ -18,6 +19,10 @@ class PlayerUiSearchBar extends StatefulWidget {
   final String title;
   final Color accentColor;
   final Duration debounceDuration;
+
+  /// Shown at the right of the field while it's empty (the clear button takes its place once
+  /// something is typed) - e.g. the account avatar.
+  final Widget? trailing;
 
   @override
   State<PlayerUiSearchBar> createState() => _PlayerUiSearchBarState();
@@ -91,7 +96,7 @@ class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
             contentPadding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
             prefixIcon: Icon(Icons.search, color: widget.accentColor),
             suffixIcon: _controller.text.isEmpty
-                ? null
+                ? widget.trailing
                 : IconButton(
                     onPressed: () {
                       _debounceTimer?.cancel();
@@ -117,7 +122,7 @@ class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
                 text: TextSpan(
                   style: const TextStyle(
                     fontFamily: 'Poppins',
-                    fontSize: 14,
+                    fontSize: 16,
                     fontWeight: FontWeight.w500,
                   ),
                   children: [

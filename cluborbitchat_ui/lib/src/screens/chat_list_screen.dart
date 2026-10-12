@@ -727,133 +727,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
             ?.trim();
         return Scaffold(
           backgroundColor: PlayerUiSignalTheme.mobileBackgroundColor,
-          appBar: AppBar(
-            backgroundColor: PlayerUiSignalTheme.secondaryColor,
-            titleSpacing: 20,
-            title: const Text(
-              'Chats',
-              style: TextStyle(color: PlayerUiSignalTheme.primaryDarkColor),
-            ),
-            actions: [
-              Builder(
-                builder: (context) {
-                  final profile = controller.userProfile;
-                  final avatarUrl =
-                      profile?.profilePic?.thumbnailURL ??
-                      profile?.profilePic?.scrollSizeURL ??
-                      profile?.profilePic?.fullSizeURL;
-                  final initialsSource =
-                      profile?.displayName ?? profile?.firstName ?? 'U';
-                  final initials = initialsSource.trim().isEmpty
-                      ? 'U'
-                      : initialsSource.trim()[0].toUpperCase();
-
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 10),
-                    child: PopupMenuButton<String>(
-                      tooltip: 'Account menu',
-                      position: PopupMenuPosition.under,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      color: PlayerUiSignalTheme.secondaryColor,
-                      onSelected: (value) async {
-                        if (value == 'profile') {
-                          final profileUid = controller.userProfile?.uid.trim();
-                          if (profileUid != null && profileUid.isNotEmpty) {
-                            try {
-                              context.push('/profile/$profileUid');
-                              return;
-                            } catch (_) {
-                              // Fall back to package-local profile when host app
-                              // does not provide a /profile/:uid route.
-                            }
-                          }
-
-                          await Navigator.of(context).push<void>(
-                            MaterialPageRoute<void>(
-                              builder: (_) => const UserProfileViewScreen(),
-                            ),
-                          );
-                          return;
-                        }
-                        if (value == 'call_settings') {
-                          context.pushNamed(PlayerChatRoutes.callSettings);
-                          return;
-                        }
-                        if (value == 'logout') {
-                          await controller.logout();
-                          if (!context.mounted) return;
-                          context.goNamed(PlayerChatRoutes.login);
-                        }
-                      },
-                      itemBuilder: (_) => [
-                        const PopupMenuItem<String>(
-                          value: 'profile',
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.person_outline,
-                                size: 18,
-                                color: PlayerUiSignalTheme.primaryDarkColor,
-                              ),
-                              SizedBox(width: 8),
-                              Text('Profile'),
-                            ],
-                          ),
-                        ),
-                        if (kDebugMode)
-                          const PopupMenuItem<String>(
-                            value: 'call_settings',
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.call,
-                                  size: 18,
-                                  color: PlayerUiSignalTheme.primaryDarkColor,
-                                ),
-                                SizedBox(width: 8),
-                                Text('Call settings'),
-                              ],
-                            ),
-                          ),
-                        const PopupMenuItem<String>(
-                          value: 'logout',
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.logout,
-                                size: 18,
-                                color: PlayerUiSignalTheme.primaryDarkColor,
-                              ),
-                              SizedBox(width: 8),
-                              Text('Logout'),
-                            ],
-                          ),
-                        ),
-                      ],
-                      child: Container(
-                        padding: const EdgeInsets.all(2),
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: PlayerUiSignalTheme.primaryDarkColor,
-                            width: 3,
-                          ),
-                        ),
-                        child: _AvatarThumb(
-                          imageUrl: avatarUrl,
-                          initials: initials,
-                          size: 32,
-                          backgroundColor: PlayerUiSignalTheme.secondaryColor,
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
           floatingActionButton: FloatingActionButton(
             backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
             foregroundColor: PlayerUiSignalTheme.secondaryColor,
@@ -863,182 +736,317 @@ class _ChatListScreenState extends State<ChatListScreen> {
             child: const Icon(Icons.edit_square),
           ),
           bottomNavigationBar: widget.bottomNavigationBar,
-          body: Stack(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    if (error != null && error.isNotEmpty) ...[
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 12,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF4A1616),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                            color: const Color(0xFFFF8A80).withAlpha(150),
+          body: SafeArea(
+            bottom: false,
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      if (error != null && error.isNotEmpty) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
                           ),
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Padding(
-                              padding: EdgeInsets.only(top: 1),
-                              child: Icon(
-                                Icons.error_outline,
-                                color: Color(0xFFFFB4AB),
-                                size: 18,
-                              ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF4A1616),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: const Color(0xFFFF8A80).withAlpha(150),
                             ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                error,
-                                style: const TextStyle(
-                                  fontFamily: 'Poppins',
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w500,
-                                  color: Color(0xFFFFDAD6),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            InkWell(
-                              onTap: context.read<ErrorNotifier>().clear,
-                              borderRadius: BorderRadius.circular(999),
-                              child: const Padding(
-                                padding: EdgeInsets.all(2),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Padding(
+                                padding: EdgeInsets.only(top: 1),
                                 child: Icon(
-                                  Icons.close,
-                                  color: Color(0xFFFFDAD6),
+                                  Icons.error_outline,
+                                  color: Color(0xFFFFB4AB),
                                   size: 18,
                                 ),
                               ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                    ],
-                    PlayerUiSearchBar(
-                      onChanged: controller.updateSearchQuery,
-                      title: 'users and chats',
-                      accentColor: PlayerUiSignalTheme.primaryDarkColor,
-                    ),
-                    if (_categoryResolver(context) case final resolver?) ...[
-                      const SizedBox(height: 12),
-                      _buildFilterChips(controller, resolver),
-                    ],
-                    const SizedBox(height: 16),
-                    if (_pendingShareFiles.isNotEmpty) ...[
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 10,
-                        ),
-                        decoration: BoxDecoration(
-                          color: PlayerUiSignalTheme.primaryDarkColor.withAlpha(
-                            34,
-                          ),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: PlayerUiSignalTheme.primaryDarkColor
-                                .withAlpha(90),
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                'Select chats to share ${_pendingShareFiles.length} item${_pendingShareFiles.length == 1 ? '' : 's'}.',
-                                style: const TextStyle(
-                                  fontFamily: 'Poppins',
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: PlayerUiSignalTheme.primaryDarkColor,
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  error,
+                                  style: const TextStyle(
+                                    fontFamily: 'Poppins',
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                    color: Color(0xFFFFDAD6),
+                                  ),
                                 ),
                               ),
-                            ),
-                            // Leave sharing mode without sending anything.
-                            TextButton(
-                              onPressed: _isSharing ? null : _finishSharing,
-                              style: TextButton.styleFrom(
-                                foregroundColor:
-                                    PlayerUiSignalTheme.primaryDarkColor,
-                                visualDensity: VisualDensity.compact,
-                              ),
-                              child: const Text('Cancel'),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          // Disabled while uploading, so a second tap can't send it twice.
-                          onPressed:
-                              _isSharing || _shareSelectedThreadIds.isEmpty
-                              ? null
-                              : () => _shareToSelectedChats(controller),
-                          style: FilledButton.styleFrom(
-                            backgroundColor:
-                                PlayerUiSignalTheme.primaryDarkColor,
-                            foregroundColor: PlayerUiSignalTheme.secondaryColor,
-                            disabledBackgroundColor: PlayerUiSignalTheme
-                                .primaryDarkColor
-                                .withAlpha(60),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          icon: _isSharing
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
+                              const SizedBox(width: 8),
+                              InkWell(
+                                onTap: context.read<ErrorNotifier>().clear,
+                                borderRadius: BorderRadius.circular(999),
+                                child: const Padding(
+                                  padding: EdgeInsets.all(2),
+                                  child: Icon(
+                                    Icons.close,
+                                    color: Color(0xFFFFDAD6),
+                                    size: 18,
                                   ),
-                                )
-                              : const Icon(Icons.send_rounded, size: 18),
-                          label: Text(
-                            _isSharing
-                                ? 'Sharing...'
-                                : _shareSelectedThreadIds.isEmpty
-                                ? 'Tap chats to select them'
-                                : 'Share to ${_shareSelectedThreadIds.length} chat${_shareSelectedThreadIds.length == 1 ? '' : 's'}',
-                            style: const TextStyle(
-                              fontFamily: 'Poppins',
-                              fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      PlayerUiSearchBar(
+                        onChanged: controller.updateSearchQuery,
+                        title: 'users and chats',
+                        accentColor: PlayerUiSignalTheme.primaryDarkColor,
+                        // The account avatar sits in the search bar, as on the app's other tabs.
+                        trailing: Builder(
+                          builder: (context) {
+                            final profile = controller.userProfile;
+                            final avatarUrl =
+                                profile?.profilePic?.thumbnailURL ??
+                                profile?.profilePic?.scrollSizeURL ??
+                                profile?.profilePic?.fullSizeURL;
+                            final initialsSource =
+                                profile?.displayName ??
+                                profile?.firstName ??
+                                'U';
+                            final initials = initialsSource.trim().isEmpty
+                                ? 'U'
+                                : initialsSource.trim()[0].toUpperCase();
+
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: PopupMenuButton<String>(
+                                tooltip: 'Account menu',
+                                position: PopupMenuPosition.under,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                color: PlayerUiSignalTheme.secondaryColor,
+                                onSelected: (value) async {
+                                  if (value == 'profile') {
+                                    final profileUid = controller
+                                        .userProfile
+                                        ?.uid
+                                        .trim();
+                                    if (profileUid != null &&
+                                        profileUid.isNotEmpty) {
+                                      try {
+                                        context.push('/profile/$profileUid');
+                                        return;
+                                      } catch (_) {
+                                        // Fall back to package-local profile when host app
+                                        // does not provide a /profile/:uid route.
+                                      }
+                                    }
+
+                                    await Navigator.of(context).push<void>(
+                                      MaterialPageRoute<void>(
+                                        builder: (_) =>
+                                            const UserProfileViewScreen(),
+                                      ),
+                                    );
+                                    return;
+                                  }
+                                  if (value == 'call_settings') {
+                                    context.pushNamed(
+                                      PlayerChatRoutes.callSettings,
+                                    );
+                                    return;
+                                  }
+                                  if (value == 'logout') {
+                                    await controller.logout();
+                                    if (!context.mounted) return;
+                                    context.goNamed(PlayerChatRoutes.login);
+                                  }
+                                },
+                                itemBuilder: (_) => [
+                                  const PopupMenuItem<String>(
+                                    value: 'profile',
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.person_outline,
+                                          size: 18,
+                                          color: PlayerUiSignalTheme
+                                              .primaryDarkColor,
+                                        ),
+                                        SizedBox(width: 8),
+                                        Text('Profile'),
+                                      ],
+                                    ),
+                                  ),
+                                  if (kDebugMode)
+                                    const PopupMenuItem<String>(
+                                      value: 'call_settings',
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            Icons.call,
+                                            size: 18,
+                                            color: PlayerUiSignalTheme
+                                                .primaryDarkColor,
+                                          ),
+                                          SizedBox(width: 8),
+                                          Text('Call settings'),
+                                        ],
+                                      ),
+                                    ),
+                                  const PopupMenuItem<String>(
+                                    value: 'logout',
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.logout,
+                                          size: 18,
+                                          color: PlayerUiSignalTheme
+                                              .primaryDarkColor,
+                                        ),
+                                        SizedBox(width: 8),
+                                        Text('Logout'),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                                child: Container(
+                                  padding: const EdgeInsets.all(2),
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color:
+                                          PlayerUiSignalTheme.primaryDarkColor,
+                                      width: 3,
+                                    ),
+                                  ),
+                                  child: _AvatarThumb(
+                                    imageUrl: avatarUrl,
+                                    initials: initials,
+                                    size: 32,
+                                    backgroundColor:
+                                        PlayerUiSignalTheme.secondaryColor,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      if (_categoryResolver(context) case final resolver?) ...[
+                        const SizedBox(height: 12),
+                        _buildFilterChips(controller, resolver),
+                      ],
+                      const SizedBox(height: 16),
+                      if (_pendingShareFiles.isNotEmpty) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: PlayerUiSignalTheme.primaryDarkColor
+                                .withAlpha(34),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: PlayerUiSignalTheme.primaryDarkColor
+                                  .withAlpha(90),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Select chats to share ${_pendingShareFiles.length} item${_pendingShareFiles.length == 1 ? '' : 's'}.',
+                                  style: const TextStyle(
+                                    fontFamily: 'Poppins',
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: PlayerUiSignalTheme.primaryDarkColor,
+                                  ),
+                                ),
+                              ),
+                              // Leave sharing mode without sending anything.
+                              TextButton(
+                                onPressed: _isSharing ? null : _finishSharing,
+                                style: TextButton.styleFrom(
+                                  foregroundColor:
+                                      PlayerUiSignalTheme.primaryDarkColor,
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                                child: const Text('Cancel'),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            // Disabled while uploading, so a second tap can't send it twice.
+                            onPressed:
+                                _isSharing || _shareSelectedThreadIds.isEmpty
+                                ? null
+                                : () => _shareToSelectedChats(controller),
+                            style: FilledButton.styleFrom(
+                              backgroundColor:
+                                  PlayerUiSignalTheme.primaryDarkColor,
+                              foregroundColor:
+                                  PlayerUiSignalTheme.secondaryColor,
+                              disabledBackgroundColor: PlayerUiSignalTheme
+                                  .primaryDarkColor
+                                  .withAlpha(60),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            icon: _isSharing
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.send_rounded, size: 18),
+                            label: Text(
+                              _isSharing
+                                  ? 'Sharing...'
+                                  : _shareSelectedThreadIds.isEmpty
+                                  ? 'Tap chats to select them'
+                                  : 'Share to ${_shareSelectedThreadIds.length} chat${_shareSelectedThreadIds.length == 1 ? '' : 's'}',
+                              style: const TextStyle(
+                                fontFamily: 'Poppins',
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
                           ),
                         ),
+                        const SizedBox(height: 12),
+                      ],
+                      Expanded(
+                        child: RefreshIndicator(
+                          onRefresh: controller.loadThreads,
+                          child: _buildResultsList(context, controller),
+                        ),
                       ),
-                      const SizedBox(height: 12),
                     ],
-                    Expanded(
-                      child: RefreshIndicator(
-                        onRefresh: controller.loadThreads,
-                        child: _buildResultsList(context, controller),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (controller.matrixConnecting)
-                Positioned.fill(
-                  child: _ChatListSyncOverlay(
-                    progressPercent: controller.matrixSyncPercent,
-                    status: controller.matrixSyncStatus,
                   ),
                 ),
-            ],
+                if (controller.matrixConnecting)
+                  Positioned.fill(
+                    child: _ChatListSyncOverlay(
+                      progressPercent: controller.matrixSyncPercent,
+                      status: controller.matrixSyncStatus,
+                    ),
+                  ),
+              ],
+            ),
           ),
         );
       },
