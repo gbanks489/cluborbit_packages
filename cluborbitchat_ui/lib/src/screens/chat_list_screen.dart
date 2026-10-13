@@ -759,14 +759,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
         _schedulePresenceRefreshIfNeeded(controller);
         return Scaffold(
           backgroundColor: PlayerUiSignalTheme.mobileBackgroundColor,
-          floatingActionButton: FloatingActionButton(
-            backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-            foregroundColor: PlayerUiSignalTheme.secondaryColor,
-            onPressed: () {
-              context.pushNamed(PlayerChatRoutes.createChat);
-            },
-            child: const Icon(Icons.edit_square),
-          ),
+          // No new chat while picking chats to share into.
+          floatingActionButton: _pendingShareFiles.isNotEmpty
+              ? null
+              : FloatingActionButton(
+                  backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
+                  foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                  onPressed: () {
+                    context.pushNamed(PlayerChatRoutes.createChat);
+                  },
+                  child: const Icon(Icons.edit_square),
+                ),
           bottomNavigationBar: widget.bottomNavigationBar,
           body: SafeArea(
             bottom: false,
