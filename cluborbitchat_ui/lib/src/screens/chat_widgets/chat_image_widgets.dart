@@ -134,6 +134,13 @@ class _ImageCollageGrid extends StatelessWidget {
   static const double _line = 2; // the white grid lines
   static const double _radius = 12;
 
+  // How big an image can be in the chat: a single one fits within this box keeping its
+  // proportions (so a tall photo is 260 high and narrower, a wide one 240 wide and shorter); a
+  // collage is at most this wide.
+  static const double _singleMaxWidth = 240;
+  static const double _singleMaxHeight = 260;
+  static const double _collageMaxWidth = 260;
+
   @override
   Widget build(BuildContext context) {
     if (images.isEmpty) {
@@ -143,10 +150,16 @@ class _ImageCollageGrid extends StatelessWidget {
     // A single image keeps its own aspect ratio (scaled down to fit, never cropped) - an unsized
     // Image preserves its ratio within these bounds. Only the loading/error box is a fixed size.
     if (images.length == 1) {
-      Widget box(Widget child) =>
-          SizedBox(height: 190, width: double.infinity, child: child);
+      Widget box(Widget child) => SizedBox(
+        height: 180,
+        width: _singleMaxWidth,
+        child: child,
+      );
       return ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 320),
+        constraints: const BoxConstraints(
+          maxWidth: _singleMaxWidth,
+          maxHeight: _singleMaxHeight,
+        ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(_radius),
           child: GestureDetector(
@@ -177,8 +190,10 @@ class _ImageCollageGrid extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth.isFinite
-            ? constraints.maxWidth
-            : 240.0;
+            ? (constraints.maxWidth < _collageMaxWidth
+                  ? constraints.maxWidth
+                  : _collageMaxWidth)
+            : _collageMaxWidth;
         final half = (width - _line) / 2;
 
         Widget grid;

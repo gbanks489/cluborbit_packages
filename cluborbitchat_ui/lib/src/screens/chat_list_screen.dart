@@ -244,10 +244,25 @@ class _ChatListScreenState extends State<ChatListScreen> {
         final rawBytes = await file.readAsBytes();
         if (rawBytes.isEmpty) continue;
 
-        final filename = _filenameFromPath(path);
+        var filename = _filenameFromPath(path);
         final mimeType = (item['mimeType'] ?? '').toLowerCase();
         final isImage =
             mimeType.startsWith('image/') || _looksLikeImage(filename);
+        // Shared copies often have no extension; give images one so the upload's type is right
+        // (otherwise other clients see a generic file).
+        if (isImage && !_looksLikeImage(filename)) {
+          final subtype = mimeType.startsWith('image/')
+              ? mimeType.substring('image/'.length)
+              : '';
+          final ext = switch (subtype) {
+            'png' => 'png',
+            'gif' => 'gif',
+            'webp' => 'webp',
+            'heic' || 'heif' => 'heic',
+            _ => 'jpg',
+          };
+          filename = '$filename.$ext';
+        }
         final bytes = isImage
             ? await ChatController.downscaleImageForUpload(rawBytes, filename)
             : rawBytes;
