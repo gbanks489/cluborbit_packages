@@ -9,14 +9,26 @@ class ErrorNotifier extends ChangeNotifier {
 
   factory ErrorNotifier() => _instance;
 
-  /// How long a connectivity error must persist (the app keeps retrying meanwhile) before it is
-  /// shown in a release build. Debug builds show every error immediately.
+  /// A connectivity error is usually transient and retried automatically, so it is only shown
+  /// once it has failed this many times in a row, or persisted for [releaseConnectivityGrace],
+  /// whichever comes first.
+  static const int connectivityFailuresBeforeShowing = 5;
   static const Duration releaseConnectivityGrace = Duration(minutes: 1);
+
+  /// What the user is told about a connection outage (the raw error is only logged).
+  static const String connectivityAlertMessage =
+      "Can't reach the chat server. We'll keep trying - messages send once you're back online.";
 
   String? _errorMessage;
   bool _isConnectivityError = false;
   DateTime? _connectivityErrorSince;
+  int _connectivityFailures = 0;
   Timer? _graceTimer;
+
+  // Which error was last handed out by takeAlert: the outage start for connectivity errors,
+  // else the error's serial number.
+  Object? _alertedKey;
+  int _errorSerial = 0;
 
   /// The latest error, whether or not it should be shown yet - see [visibleErrorMessage].
   String? get errorMessage => _errorMessage;
@@ -24,18 +36,30 @@ class ErrorNotifier extends ChangeNotifier {
   bool get isConnectivityError => _isConnectivityError;
 
   /// The error to show the user right now, or null. Connectivity errors (no network, server
-  /// unreachable, timeouts) are usually transient and retried automatically, so a release build
-  /// only shows one once it has persisted for [releaseConnectivityGrace]; anything else - and
-  /// everything in a debug build - shows immediately.
+  /// unreachable, timeouts) are usually transient and retried automatically, so one is only
+  /// shown after [connectivityFailuresBeforeShowing] failures in a row or
+  /// [releaseConnectivityGrace], as [connectivityAlertMessage]; anything else shows immediately.
   String? get visibleErrorMessage {
     final message = _errorMessage;
-    if (message == null || kDebugMode || !_isConnectivityError) return message;
+    if (message == null || !_isConnectivityError) return message;
     final since = _connectivityErrorSince;
-    if (since != null &&
-        DateTime.now().difference(since) >= releaseConnectivityGrace) {
-      return message;
-    }
-    return null;
+    final persisted =
+        _connectivityFailures >= connectivityFailuresBeforeShowing ||
+        (since != null &&
+            DateTime.now().difference(since) >= releaseConnectivityGrace);
+    return persisted ? connectivityAlertMessage : null;
+  }
+
+  /// [visibleErrorMessage], but only the first time for each error (and once per connection
+  /// outage, however many retries fail): for screens that tell the user with a snackbar, so it
+  /// isn't repeated on every retry or by every listening screen. Null otherwise.
+  String? takeAlert() {
+    final message = visibleErrorMessage;
+    if (message == null) return null;
+    final key = _isConnectivityError ? _connectivityErrorSince : _errorSerial;
+    if (key == _alertedKey) return null;
+    _alertedKey = key;
+    return message;
   }
 
   /// `connectivity` marks whether this is a connection problem; left null, it is inferred from
@@ -45,10 +69,12 @@ class ErrorNotifier extends ChangeNotifier {
     final isConnectivity = connectivity ?? looksLikeConnectivityError(message);
     _errorMessage = message;
     _isConnectivityError = isConnectivity;
+    _errorSerial++;
     if (isConnectivity) {
       // Keep the start of the outage across retries, so the grace period isn't restarted.
       _connectivityErrorSince ??= DateTime.now();
-      if (!kDebugMode && _graceTimer == null) {
+      _connectivityFailures++;
+      if (_graceTimer == null) {
         final remaining =
             releaseConnectivityGrace -
             DateTime.now().difference(_connectivityErrorSince!);
@@ -90,6 +116,7 @@ class ErrorNotifier extends ChangeNotifier {
 
   void _resetConnectivityTracking() {
     _connectivityErrorSince = null;
+    _connectivityFailures = 0;
     _graceTimer?.cancel();
     _graceTimer = null;
   }

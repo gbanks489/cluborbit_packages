@@ -4,7 +4,6 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -25,6 +24,8 @@ import 'package:record/record.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
+import '../widgets/animated_emoji.dart';
+import '../widgets/club_emoji_picker.dart';
 import 'chat_details_screen.dart';
 
 part 'chat_widgets/chat_bubble_widgets.dart';
@@ -1021,14 +1022,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if (raw != null && raw.isNotEmpty) {
       debugPrint('[ChatScreen] Send error: $raw');
     }
-    final error = _errorNotifierRef?.visibleErrorMessage?.trim();
-    if (error != null && error.isNotEmpty && mounted) {
+    if (!mounted) return;
+    // Once per error (and once per connection outage, only after several failed retries) -
+    // a plain snackbar, not a red alert.
+    final error = _errorNotifierRef?.takeAlert()?.trim();
+    if (error != null && error.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(error),
-          backgroundColor: const Color(0xFF4A1616),
-          duration: const Duration(seconds: 5),
-        ),
+        SnackBar(content: Text(error), duration: const Duration(seconds: 5)),
       );
     }
   }
@@ -1301,6 +1301,14 @@ class _ChatScreenState extends State<ChatScreen> {
     return body.isNotEmpty &&
         _emojiOnlyPattern.hasMatch(body) &&
         _emojiPattern.allMatches(body).length <= 3;
+  }
+
+  /// The message's emoji when it's exactly one emoji that has an animation, else null.
+  String? _singleAnimatedEmoji(ChatMessage message) {
+    if (!_isEmojiOnlyMessage(message)) return null;
+    final body = message.body.trim();
+    if (_emojiPattern.allMatches(body).length != 1) return null;
+    return AnimatedEmojis.normalize(body);
   }
 
   _MediaRef? _mediaRefFor(ChatMessage message) {
@@ -4066,7 +4074,22 @@ class _ChatScreenState extends State<ChatScreen> {
                                                   _appearance.messageFontFamily,
                                             ),
                                             children: [
-                                              TextSpan(text: message.body),
+                                              // A single emoji on its own plays its
+                                              // animation (when it has one), large.
+                                              if (_singleAnimatedEmoji(message)
+                                                  case final emoji?)
+                                                WidgetSpan(
+                                                  alignment:
+                                                      PlaceholderAlignment
+                                                          .bottom,
+                                                  child: AnimatedEmoji(
+                                                    emoji: emoji,
+                                                    size: 72,
+                                                    loops: 2,
+                                                  ),
+                                                )
+                                              else
+                                                TextSpan(text: message.body),
                                               if (showInsideTime || mine)
                                                 const TextSpan(text: '  '),
                                               if (showInsideTime)
@@ -4614,9 +4637,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         child: _showEmojiPickerPanel
                             ? SizedBox(
                                 height: 320,
-                                child: EmojiPicker(
-                                  textEditingController: _composerController,
-                                  onEmojiSelected: (category, emoji) {
+                                child: ClubEmojiPicker(
+                                  textController: _composerController,
+                                  onEmojiSelected: (_) {
                                     _onComposerChanged(
                                       controller,
                                       _composerController.text,
@@ -4628,7 +4651,6 @@ class _ChatScreenState extends State<ChatScreen> {
                                       _composerController.text,
                                     );
                                   },
-                                  config: const Config(),
                                 ),
                               )
                             : const SizedBox.shrink(),
@@ -4712,6 +4734,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   onTap: () async {
                     _setLocalReaction(message.id, emoji);
                     _clearSelectedMessages();
+                    showEmojiBurst(context, emoji);
                     await controller.sendReaction(message.id, emoji);
                   },
                   child: Padding(
@@ -4937,15 +4960,14 @@ class _ChatScreenState extends State<ChatScreen> {
               color: PlayerUiSignalTheme.secondaryColor,
               borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
             ),
-            child: EmojiPicker(
-              textEditingController: TextEditingController(),
-              onEmojiSelected: (category, emoji) async {
+            child: ClubEmojiPicker(
+              onEmojiSelected: (emoji) async {
                 Navigator.of(sheetContext).pop();
-                _setLocalReaction(message.id, emoji.emoji);
+                _setLocalReaction(message.id, emoji);
                 _clearSelectedMessages();
-                await controller.sendReaction(message.id, emoji.emoji);
+                showEmojiBurst(context, emoji);
+                await controller.sendReaction(message.id, emoji);
               },
-              config: const Config(),
             ),
           ),
         );

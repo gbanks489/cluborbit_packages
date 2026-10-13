@@ -47,6 +47,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
   final Set<String> _dmParticipantRequestsInFlight = <String>{};
   final Set<String> _presenceRequestsInFlight = <String>{};
   Timer? _presenceRefreshTimer;
+  ErrorNotifier? _errorNotifier;
   String _presenceRefreshKey = '';
   late List<Map<String, String?>> _pendingShareFiles;
   // Chats ticked to receive the pending share, and whether a share is uploading right now.
@@ -137,8 +138,30 @@ class _ChatListScreenState extends State<ChatListScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final notifier = context.read<ErrorNotifier>();
+    if (!identical(notifier, _errorNotifier)) {
+      _errorNotifier?.removeListener(_onErrorNotifierChanged);
+      _errorNotifier = notifier..addListener(_onErrorNotifierChanged);
+    }
+  }
+
+  /// Errors are told with a plain snackbar - once per error, and for a lost connection only
+  /// after several failed retries (ErrorNotifier.takeAlert) - never a red banner.
+  void _onErrorNotifierChanged() {
+    if (!mounted) return;
+    final error = _errorNotifier?.takeAlert()?.trim();
+    if (error == null || error.isEmpty) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(error), duration: const Duration(seconds: 5)),
+    );
+  }
+
+  @override
   void dispose() {
     _presenceRefreshTimer?.cancel();
+    _errorNotifier?.removeListener(_onErrorNotifierChanged);
     super.dispose();
   }
 
@@ -719,12 +742,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
     return Consumer<ChatController>(
       builder: (context, controller, _) {
         _schedulePresenceRefreshIfNeeded(controller);
-        // Connection errors only show in release builds once they've outlasted a minute of
-        // automatic retries (see ErrorNotifier.visibleErrorMessage).
-        final error = context
-            .watch<ErrorNotifier>()
-            .visibleErrorMessage
-            ?.trim();
         return Scaffold(
           backgroundColor: PlayerUiSignalTheme.mobileBackgroundColor,
           floatingActionButton: FloatingActionButton(
@@ -744,61 +761,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     children: [
-                      if (error != null && error.isNotEmpty) ...[
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 12,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF4A1616),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: const Color(0xFFFF8A80).withAlpha(150),
-                            ),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Padding(
-                                padding: EdgeInsets.only(top: 1),
-                                child: Icon(
-                                  Icons.error_outline,
-                                  color: Color(0xFFFFB4AB),
-                                  size: 18,
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  error,
-                                  style: const TextStyle(
-                                    fontFamily: 'Poppins',
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w500,
-                                    color: Color(0xFFFFDAD6),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              InkWell(
-                                onTap: context.read<ErrorNotifier>().clear,
-                                borderRadius: BorderRadius.circular(999),
-                                child: const Padding(
-                                  padding: EdgeInsets.all(2),
-                                  child: Icon(
-                                    Icons.close,
-                                    color: Color(0xFFFFDAD6),
-                                    size: 18,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
                       PlayerUiSearchBar(
                         onChanged: controller.updateSearchQuery,
                         title: 'users and chats',
