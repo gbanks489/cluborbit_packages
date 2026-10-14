@@ -154,7 +154,7 @@ class _AttachmentSheetFrame extends StatelessWidget {
                 height: 4,
                 margin: const EdgeInsets.only(bottom: 12),
                 decoration: BoxDecoration(
-                  color: Colors.white24,
+                  color: PlayerUiSignalTheme.text.withAlpha(61),
                   borderRadius: BorderRadius.circular(999),
                 ),
               ),
@@ -162,8 +162,8 @@ class _AttachmentSheetFrame extends StatelessWidget {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   title,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: PlayerUiSignalTheme.text,
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
                     fontFamily: 'Poppins',
@@ -205,22 +205,22 @@ class _AttachmentOptionTile extends StatelessWidget {
         width: 40,
         height: 40,
         decoration: BoxDecoration(
-          color: Colors.white.withAlpha(18),
+          color: PlayerUiSignalTheme.text.withAlpha(18),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Icon(icon, color: PlayerUiSignalTheme.primaryDarkColor),
       ),
       title: Text(
         title,
-        style: const TextStyle(
-          color: Colors.white,
+        style: TextStyle(
+          color: PlayerUiSignalTheme.text,
           fontWeight: FontWeight.w600,
           fontFamily: 'Poppins',
         ),
       ),
       subtitle: Text(
         subtitle,
-        style: const TextStyle(color: Colors.white70, fontSize: 12),
+        style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179), fontSize: 12),
       ),
       onTap: onTap,
     );
@@ -251,16 +251,16 @@ class _AttachmentInput extends StatelessWidget {
       child: TextField(
         controller: controller,
         maxLines: maxLines,
-        style: const TextStyle(
-          color: Colors.white,
+        style: TextStyle(
+          color: PlayerUiSignalTheme.text,
           fontFamily: 'Poppins',
           fontSize: 14,
         ),
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,
-          labelStyle: const TextStyle(color: Colors.white70),
-          hintStyle: const TextStyle(color: Colors.white54),
+          labelStyle: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
+          hintStyle: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(138)),
           filled: true,
           fillColor: PlayerUiSignalTheme.mobileBackgroundColor,
           border: OutlineInputBorder(
@@ -275,7 +275,7 @@ class _AttachmentInput extends StatelessWidget {
               color: PlayerUiSignalTheme.primaryDarkColor.withAlpha(120),
             ),
           ),
-          focusedBorder: const OutlineInputBorder(
+          focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.all(Radius.circular(16)),
             borderSide: BorderSide(color: PlayerUiSignalTheme.primaryDarkColor),
           ),
@@ -300,14 +300,14 @@ class _AttachmentFormActionRow extends StatelessWidget {
       children: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(null),
-          child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+          child: Text('Cancel', style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179))),
         ),
         const Spacer(),
         FilledButton.icon(
           onPressed: onSend,
           style: FilledButton.styleFrom(
             backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-            foregroundColor: PlayerUiSignalTheme.secondaryColor,
+            foregroundColor: PlayerUiSignalTheme.onAccent,
           ),
           icon: const Icon(Icons.send, size: 18),
           label: const Text('Send'),
@@ -456,16 +456,16 @@ class _LocationAttachmentSheetState extends State<_LocationAttachmentSheet> {
                     height: 4,
                     margin: const EdgeInsets.only(bottom: 12),
                     decoration: BoxDecoration(
-                      color: Colors.white24,
+                      color: PlayerUiSignalTheme.text.withAlpha(61),
                       borderRadius: BorderRadius.circular(999),
                     ),
                   ),
-                  const Align(
+                  Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
                       'Send location',
                       style: TextStyle(
-                        color: Colors.white,
+                        color: PlayerUiSignalTheme.text,
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
                         fontFamily: 'Poppins',
@@ -535,10 +535,10 @@ class _LocationAttachmentSheetState extends State<_LocationAttachmentSheet> {
                             ],
                           ),
                           if (_loadingLocation)
-                            const Center(
+                            Center(
                               child: CircularProgressIndicator(
                                 valueColor: AlwaysStoppedAnimation<Color>(
-                                  Colors.white,
+                                  PlayerUiSignalTheme.text,
                                 ),
                               ),
                             ),
@@ -553,8 +553,8 @@ class _LocationAttachmentSheetState extends State<_LocationAttachmentSheet> {
                           ? '${_pickedLocation!.latitude.toStringAsFixed(5)}, '
                                 '${_pickedLocation!.longitude.toStringAsFixed(5)}  •  Tap map to move pin'
                           : 'Tap the map to place a pin',
-                      style: const TextStyle(
-                        color: Colors.white54,
+                      style: TextStyle(
+                        color: PlayerUiSignalTheme.text.withAlpha(138),
                         fontSize: 11,
                       ),
                     ),
@@ -690,19 +690,19 @@ class _ContactAttachmentSheetState extends State<_ContactAttachmentSheet> {
               onPressed: _loading ? null : _pickContact,
               style: FilledButton.styleFrom(
                 backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                foregroundColor: PlayerUiSignalTheme.onAccent,
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
                 ),
               ),
               icon: _loading
-                  ? const SizedBox(
+                  ? SizedBox(
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: Colors.white,
+                        color: PlayerUiSignalTheme.text,
                       ),
                     )
                   : const Icon(Icons.contacts_outlined),
@@ -714,9 +714,9 @@ class _ContactAttachmentSheetState extends State<_ContactAttachmentSheet> {
           const SizedBox(height: 8),
           TextButton(
             onPressed: () => Navigator.of(context).pop(null),
-            child: const Text(
+            child: Text(
               'Cancel',
-              style: TextStyle(color: Colors.white70),
+              style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
             ),
           ),
         ],
@@ -818,15 +818,15 @@ class _PollAttachmentSheetState extends State<_PollAttachmentSheet> {
                 120,
               ),
               contentPadding: EdgeInsets.zero,
-              title: const Text(
+              title: Text(
                 'Allow multiple selections',
-                style: TextStyle(color: Colors.white),
+                style: TextStyle(color: PlayerUiSignalTheme.text),
               ),
               subtitle: Text(
                 _allowsMultiple
                     ? 'Users can vote for more than one option'
                     : 'Users can vote for only one option',
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
+                style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179), fontSize: 12),
               ),
               onChanged: (value) {
                 setState(() {
@@ -853,9 +853,9 @@ class _PollAttachmentSheetState extends State<_PollAttachmentSheet> {
                       padding: const EdgeInsets.only(left: 6, bottom: 12),
                       child: GestureDetector(
                         onTap: () => _removeOption(index),
-                        child: const Icon(
+                        child: Icon(
                           Icons.remove_circle_outline,
-                          color: Colors.white54,
+                          color: PlayerUiSignalTheme.text.withAlpha(138),
                           size: 22,
                         ),
                       ),
@@ -868,12 +868,12 @@ class _PollAttachmentSheetState extends State<_PollAttachmentSheet> {
                 alignment: Alignment.centerLeft,
                 child: TextButton.icon(
                   onPressed: _addOption,
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.add_circle_outline,
                     size: 18,
                     color: PlayerUiSignalTheme.primaryDarkColor,
                   ),
-                  label: const Text(
+                  label: Text(
                     'Add option',
                     style: TextStyle(
                       color: PlayerUiSignalTheme.primaryDarkColor,

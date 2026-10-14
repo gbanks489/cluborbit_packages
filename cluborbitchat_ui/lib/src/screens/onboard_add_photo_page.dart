@@ -66,7 +66,7 @@ class _OnboardAddPhotoPageState extends State<OnboardAddPhotoPage> {
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                 fontFamily: 'Poppins',
                 fontWeight: FontWeight.w700,
-                color: Colors.white,
+                color: PlayerUiSignalTheme.text,
               ),
             ),
             const SizedBox(height: 8),
@@ -75,16 +75,16 @@ class _OnboardAddPhotoPageState extends State<OnboardAddPhotoPage> {
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 fontFamily: 'Poppins',
-                color: Colors.white70,
+                color: PlayerUiSignalTheme.text.withAlpha(179),
               ),
             ),
             const SizedBox(height: 24),
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: Colors.white.withAlpha(10),
+                color: PlayerUiSignalTheme.text.withAlpha(10),
                 borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: Colors.white.withAlpha(24)),
+                border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(24)),
               ),
               child: Column(
                 children: [
@@ -99,7 +99,7 @@ class _OnboardAddPhotoPageState extends State<OnboardAddPhotoPage> {
                     child: FilledButton(
                       style: FilledButton.styleFrom(
                         backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                        foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                        foregroundColor: PlayerUiSignalTheme.onAccent,
                         padding: const EdgeInsets.symmetric(vertical: 15),
                       ),
                       onPressed: _continue,

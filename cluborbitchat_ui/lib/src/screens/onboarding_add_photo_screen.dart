@@ -76,7 +76,7 @@ class _OnboardingAddPhotoScreenState extends State<OnboardingAddPhotoScreen> {
             FilledButton(
               style: FilledButton.styleFrom(
                 backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                foregroundColor: PlayerUiSignalTheme.onAccent,
                 padding: const EdgeInsets.symmetric(vertical: 14),
               ),
               onPressed: _continue,

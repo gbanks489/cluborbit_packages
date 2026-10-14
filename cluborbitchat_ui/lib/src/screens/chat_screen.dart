@@ -98,24 +98,42 @@ class _LinkPreviewData {
 
 class _ChatAppearance {
   const _ChatAppearance({
-    required this.myBubbleColor,
-    required this.otherBubbleColor,
-    required this.messageTextColor,
+    required Color myBubbleColor,
+    required Color otherBubbleColor,
+    required Color messageTextColor,
     required this.messageFontFamily,
     this.backgroundImageUrl,
-  });
+    this.followTheme = false,
+  }) : _myBubbleColor = myBubbleColor,
+       _otherBubbleColor = otherBubbleColor,
+       _messageTextColor = messageTextColor;
 
-  final Color myBubbleColor;
-  final Color otherBubbleColor;
-  final Color messageTextColor;
+  /// When true the bubble and text colours come from the app's colour theme (and change with
+  /// it); the chosen custom colours below are only used when it's false.
+  final bool followTheme;
+  final Color _myBubbleColor;
+  final Color _otherBubbleColor;
+  final Color _messageTextColor;
   final String messageFontFamily;
   final String? backgroundImageUrl;
 
+  static ClubOrbitPalette get _theme => ClubOrbitPalette.current;
+
+  /// Theme colours: the user's own bubbles are the highlight blended into the page (so one text
+  /// colour reads on both bubbles), other people's are the theme's card colour.
+  Color get myBubbleColor => followTheme
+      ? Color.alphaBlend(_theme.highlight.withAlpha(115), _theme.background)
+      : _myBubbleColor;
+  Color get otherBubbleColor => followTheme ? _theme.surface : _otherBubbleColor;
+  Color get messageTextColor => followTheme ? _theme.text : _messageTextColor;
+
+  /// Chats nobody has customised follow the app theme.
   static const _ChatAppearance defaults = _ChatAppearance(
     myBubbleColor: Color(0xFF2B6DE9),
     otherBubbleColor: Color(0xFF1B2737),
     messageTextColor: Colors.white,
     messageFontFamily: 'Poppins',
+    followTheme: true,
   );
 
   _ChatAppearance copyWith({
@@ -125,11 +143,13 @@ class _ChatAppearance {
     String? messageFontFamily,
     String? backgroundImageUrl,
     bool clearBackground = false,
+    bool? followTheme,
   }) {
     return _ChatAppearance(
-      myBubbleColor: myBubbleColor ?? this.myBubbleColor,
-      otherBubbleColor: otherBubbleColor ?? this.otherBubbleColor,
-      messageTextColor: messageTextColor ?? this.messageTextColor,
+      followTheme: followTheme ?? this.followTheme,
+      myBubbleColor: myBubbleColor ?? _myBubbleColor,
+      otherBubbleColor: otherBubbleColor ?? _otherBubbleColor,
+      messageTextColor: messageTextColor ?? _messageTextColor,
       messageFontFamily: messageFontFamily ?? this.messageFontFamily,
       backgroundImageUrl: clearBackground
           ? null
@@ -167,6 +187,7 @@ class _ChatAppearanceStore {
     }
 
     final appearance = _ChatAppearance(
+      followTheme: record.followTheme,
       myBubbleColor: Color(record.myBubbleColorValue),
       otherBubbleColor: Color(record.otherBubbleColorValue),
       messageTextColor: Color(record.messageTextColorValue),
@@ -189,9 +210,11 @@ class _ChatAppearanceStore {
     await _store.save(
       ChatAppearanceRecord(
         chatKey: normalizedKey,
-        myBubbleColorValue: appearance.myBubbleColor.toARGB32(),
-        otherBubbleColorValue: appearance.otherBubbleColor.toARGB32(),
-        messageTextColorValue: appearance.messageTextColor.toARGB32(),
+        followTheme: appearance.followTheme,
+        // The custom colours, kept even while following the theme.
+        myBubbleColorValue: appearance._myBubbleColor.toARGB32(),
+        otherBubbleColorValue: appearance._otherBubbleColor.toARGB32(),
+        messageTextColorValue: appearance._messageTextColor.toARGB32(),
         messageFontFamily: appearance.messageFontFamily,
         backgroundImageUrl: appearance.backgroundImageUrl,
       ),
@@ -597,7 +620,7 @@ class _ChatScreenState extends State<ChatScreen> {
         decoration: BoxDecoration(
           color: mine ? Colors.black.withAlpha(28) : Colors.white.withAlpha(10),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.white.withAlpha(24)),
+          border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(24)),
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(14),
@@ -621,8 +644,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         siteLabel.toUpperCase(),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white60,
+                        style: TextStyle(
+                          color: PlayerUiSignalTheme.text.withAlpha(153),
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
                           letterSpacing: 0.4,
@@ -634,8 +657,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         title!,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: PlayerUiSignalTheme.text,
                           fontSize: 14,
                           fontWeight: FontWeight.w700,
                           height: 1.2,
@@ -648,8 +671,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         description!,
                         maxLines: 3,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white70,
+                        style: TextStyle(
+                          color: PlayerUiSignalTheme.text.withAlpha(179),
                           fontSize: 12,
                           height: 1.3,
                         ),
@@ -702,23 +725,23 @@ class _ChatScreenState extends State<ChatScreen> {
                   ? Colors.black.withAlpha(28)
                   : Colors.white.withAlpha(10),
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white.withAlpha(20)),
+              border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(20)),
             ),
             child: Row(
-              children: const [
+              children: [
                 SizedBox(
                   width: 16,
                   height: 16,
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white70),
+                    valueColor: AlwaysStoppedAnimation<Color>(PlayerUiSignalTheme.text.withAlpha(179)),
                   ),
                 ),
                 SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     'Loading link preview...',
-                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                    style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179), fontSize: 12),
                   ),
                 ),
               ],
@@ -737,9 +760,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   if (showInsideTime)
                     Text(
                       _bubbleTimeLabel(context, message.createdAt),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 10,
-                        color: Colors.white70,
+                        color: _appearance.messageTextColor.withAlpha(179),
                       ),
                     ),
                   if (mine)
@@ -1193,21 +1216,21 @@ class _ChatScreenState extends State<ChatScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            side: BorderSide(color: Colors.white.withAlpha(28)),
+            side: BorderSide(color: PlayerUiSignalTheme.text.withAlpha(28)),
           ),
           content: Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.chat_bubble_outline,
                 size: 18,
-                color: Colors.white70,
+                color: PlayerUiSignalTheme.text.withAlpha(179),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   message,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: PlayerUiSignalTheme.text,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
@@ -1680,9 +1703,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     if (showInsideTime)
                       Text(
                         _bubbleTimeLabel(context, message.createdAt),
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 10,
-                          color: Colors.white70,
+                          color: _appearance.messageTextColor.withAlpha(179),
                         ),
                       ),
                     if (mine)
@@ -1819,8 +1842,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     description.isNotEmpty ? description : 'Shared location',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: PlayerUiSignalTheme.text,
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                     ),
@@ -1848,7 +1871,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 if (showInsideTime)
                   Text(
                     _bubbleTimeLabel(context, message.createdAt),
-                    style: const TextStyle(fontSize: 10, color: Colors.white70),
+                    style: TextStyle(fontSize: 10, color: _appearance.messageTextColor.withAlpha(179)),
                   ),
                 if (mine)
                   Padding(
@@ -1891,7 +1914,7 @@ class _ChatScreenState extends State<ChatScreen> {
             decoration: BoxDecoration(
               color: Colors.black.withAlpha(20),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withAlpha(26)),
+              border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(26)),
             ),
             child: Row(
               children: [
@@ -1899,12 +1922,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   width: 34,
                   height: 34,
                   decoration: BoxDecoration(
-                    color: Colors.white.withAlpha(16),
+                    color: PlayerUiSignalTheme.text.withAlpha(16),
                     borderRadius: BorderRadius.circular(9),
                   ),
                   child: Icon(
                     _documentIconForMime(mime),
-                    color: Colors.white,
+                    color: PlayerUiSignalTheme.text,
                     size: 19,
                   ),
                 ),
@@ -1917,8 +1940,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         label,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: PlayerUiSignalTheme.text,
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
                         ),
@@ -1928,8 +1951,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         subtitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white70,
+                        style: TextStyle(
+                          color: PlayerUiSignalTheme.text.withAlpha(179),
                           fontSize: 11,
                         ),
                       ),
@@ -1937,7 +1960,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                const Icon(Icons.open_in_new, color: Colors.white70, size: 16),
+                Icon(Icons.open_in_new, color: PlayerUiSignalTheme.text.withAlpha(179), size: 16),
               ],
             ),
           ),
@@ -1953,9 +1976,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   if (showInsideTime)
                     Text(
                       _bubbleTimeLabel(context, message.createdAt),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 10,
-                        color: Colors.white70,
+                        color: _appearance.messageTextColor.withAlpha(179),
                       ),
                     ),
                   if (mine)
@@ -2013,7 +2036,7 @@ class _ChatScreenState extends State<ChatScreen> {
             decoration: BoxDecoration(
               color: Colors.black.withAlpha(20),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withAlpha(26)),
+              border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(26)),
             ),
             child: Row(
               children: [
@@ -2021,22 +2044,22 @@ class _ChatScreenState extends State<ChatScreen> {
                   width: 36,
                   height: 36,
                   decoration: BoxDecoration(
-                    color: Colors.white.withAlpha(16),
+                    color: PlayerUiSignalTheme.text.withAlpha(16),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.mic, color: Colors.white, size: 19),
+                  child: Icon(Icons.mic, color: PlayerUiSignalTheme.text, size: 19),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
+                      Text(
                         'Voice message',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          color: Colors.white,
+                          color: PlayerUiSignalTheme.text,
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
                         ),
@@ -2047,9 +2070,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         child: LinearProgressIndicator(
                           minHeight: 4,
                           value: progress,
-                          backgroundColor: Colors.white24,
-                          valueColor: const AlwaysStoppedAnimation<Color>(
-                            Colors.white70,
+                          backgroundColor: PlayerUiSignalTheme.text.withAlpha(61),
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            PlayerUiSignalTheme.text.withAlpha(179),
                           ),
                         ),
                       ),
@@ -2061,8 +2084,8 @@ class _ChatScreenState extends State<ChatScreen> {
                               label,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white60,
+                              style: TextStyle(
+                                color: PlayerUiSignalTheme.text.withAlpha(153),
                                 fontSize: 11,
                               ),
                             ),
@@ -2070,8 +2093,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           const SizedBox(width: 8),
                           Text(
                             '${_formatAudioDuration(position)} / ${_formatAudioDuration(duration)}',
-                            style: const TextStyle(
-                              color: Colors.white60,
+                            style: TextStyle(
+                              color: PlayerUiSignalTheme.text.withAlpha(153),
                               fontSize: 10,
                             ),
                           ),
@@ -2082,16 +2105,16 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 const SizedBox(width: 8),
                 if (_audioLoading && isCurrent)
-                  const SizedBox(
+                  SizedBox(
                     width: 18,
                     height: 18,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white70),
+                      valueColor: AlwaysStoppedAnimation<Color>(PlayerUiSignalTheme.text.withAlpha(179)),
                     ),
                   )
                 else
-                  Icon(trailingIcon, color: Colors.white70, size: 18),
+                  Icon(trailingIcon, color: PlayerUiSignalTheme.text.withAlpha(179), size: 18),
               ],
             ),
           ),
@@ -2102,9 +2125,9 @@ class _ChatScreenState extends State<ChatScreen> {
               trackHeight: 2,
               thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
               overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-              activeTrackColor: Colors.white70,
-              inactiveTrackColor: Colors.white24,
-              thumbColor: Colors.white,
+              activeTrackColor: PlayerUiSignalTheme.text.withAlpha(179),
+              inactiveTrackColor: PlayerUiSignalTheme.text.withAlpha(61),
+              thumbColor: PlayerUiSignalTheme.text,
             ),
             child: Slider(
               value: progress,
@@ -2124,9 +2147,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   if (showInsideTime)
                     Text(
                       _bubbleTimeLabel(context, message.createdAt),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 10,
-                        color: Colors.white70,
+                        color: _appearance.messageTextColor.withAlpha(179),
                       ),
                     ),
                   if (mine)
@@ -2336,7 +2359,7 @@ class _ChatScreenState extends State<ChatScreen> {
     required ChatController controller,
   }) {
     final accent = mine
-        ? Colors.white.withAlpha(220)
+        ? PlayerUiSignalTheme.text.withAlpha(220)
         : PlayerUiSignalTheme.primaryDarkColor;
 
     return Column(
@@ -2348,7 +2371,7 @@ class _ChatScreenState extends State<ChatScreen> {
           decoration: BoxDecoration(
             color: Colors.black.withAlpha(18),
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.white.withAlpha(24)),
+            border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(24)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2410,9 +2433,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   if (showInsideTime)
                     Text(
                       _bubbleTimeLabel(context, message.createdAt),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 10,
-                        color: Colors.white70,
+                        color: _appearance.messageTextColor.withAlpha(179),
                       ),
                     ),
                   if (mine)
@@ -2557,7 +2580,7 @@ class _ChatScreenState extends State<ChatScreen> {
         return SafeArea(
           top: false,
           child: Container(
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               color: PlayerUiSignalTheme.secondaryColor,
               borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
             ),
@@ -2565,7 +2588,7 @@ class _ChatScreenState extends State<ChatScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 ListTile(
-                  leading: const Icon(
+                  leading: Icon(
                     Icons.person_outline,
                     color: PlayerUiSignalTheme.primaryDarkColor,
                   ),
@@ -2576,7 +2599,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 if (canDeleteForEveryone)
                   ListTile(
-                    leading: const Icon(
+                    leading: Icon(
                       Icons.group_remove_outlined,
                       color: PlayerUiSignalTheme.primaryDarkColor,
                     ),
@@ -2635,7 +2658,7 @@ class _ChatScreenState extends State<ChatScreen> {
         border: Border.all(
           color: selected
               ? PlayerUiSignalTheme.primaryDarkColor
-              : Colors.white.withAlpha(120),
+              : PlayerUiSignalTheme.text.withAlpha(120),
           width: 1.6,
         ),
       ),
@@ -2691,13 +2714,13 @@ class _ChatScreenState extends State<ChatScreen> {
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
         mainAxisSize: MainAxisSize.min,
-        children: const [
-          Icon(Icons.forward, size: 12, color: Colors.white70),
+        children: [
+          Icon(Icons.forward, size: 12, color: _appearance.messageTextColor.withAlpha(179)),
           SizedBox(width: 4),
           Text(
             'Forwarded',
             style: TextStyle(
-              color: Colors.white70,
+              color: _appearance.messageTextColor.withAlpha(179),
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
@@ -2720,7 +2743,7 @@ class _ChatScreenState extends State<ChatScreen> {
     required ChatController controller,
   }) {
     final accent = mine
-        ? Colors.white.withAlpha(220)
+        ? PlayerUiSignalTheme.text.withAlpha(220)
         : PlayerUiSignalTheme.primaryDarkColor;
 
     return ConstrainedBox(
@@ -2732,7 +2755,7 @@ class _ChatScreenState extends State<ChatScreen> {
         decoration: BoxDecoration(
           color: Colors.black.withAlpha(16),
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: Colors.white.withAlpha(34)),
+          border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(34)),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2770,9 +2793,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   if (showInsideTime)
                     Text(
                       _bubbleTimeLabel(context, message.createdAt),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 10,
-                        color: Colors.white70,
+                        color: _appearance.messageTextColor.withAlpha(179),
                       ),
                     ),
                   if (mine)
@@ -2794,10 +2817,10 @@ class _ChatScreenState extends State<ChatScreen> {
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
               decoration: BoxDecoration(
-                color: Colors.white.withAlpha(8),
+                color: PlayerUiSignalTheme.text.withAlpha(8),
                 border: Border(
-                  top: BorderSide(color: Colors.white.withAlpha(24)),
-                  bottom: BorderSide(color: Colors.white.withAlpha(24)),
+                  top: BorderSide(color: PlayerUiSignalTheme.text.withAlpha(24)),
+                  bottom: BorderSide(color: PlayerUiSignalTheme.text.withAlpha(24)),
                 ),
               ),
               child: Column(
@@ -2833,8 +2856,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   const SizedBox(height: 8),
                   Text(
                     data.title,
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: PlayerUiSignalTheme.text,
                       fontSize: 15,
                       fontWeight: FontWeight.w700,
                     ),
@@ -2946,7 +2969,7 @@ class _ChatScreenState extends State<ChatScreen> {
       decoration: BoxDecoration(
         color: Colors.black.withAlpha(45),
         borderRadius: BorderRadius.circular(9),
-        border: const Border(
+        border: Border(
           left: BorderSide(
             color: PlayerUiSignalTheme.primaryDarkColor,
             width: 2.5,
@@ -2958,23 +2981,23 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           Text(
             message.replyToSenderName ?? 'Reply',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
-              color: Colors.white70,
+              color: PlayerUiSignalTheme.text.withAlpha(179),
               fontWeight: FontWeight.w600,
             ),
           ),
           if (replyForwarded)
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(top: 2),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.forward, size: 10, color: Colors.white60),
+                  Icon(Icons.forward, size: 10, color: PlayerUiSignalTheme.text.withAlpha(153)),
                   SizedBox(width: 3),
                   Text(
                     'Forwarded',
-                    style: TextStyle(color: Colors.white60, fontSize: 10),
+                    style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(153), fontSize: 10),
                   ),
                 ],
               ),
@@ -3004,11 +3027,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   )
                 else
-                  const Padding(
+                  Padding(
                     padding: EdgeInsets.only(right: 8),
                     child: Icon(
                       Icons.photo_outlined,
-                      color: Colors.white60,
+                      color: PlayerUiSignalTheme.text.withAlpha(153),
                       size: 16,
                     ),
                   ),
@@ -3031,7 +3054,7 @@ class _ChatScreenState extends State<ChatScreen> {
               replyBody.isEmpty ? 'Original message' : replyBody,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: Colors.white70),
+              style: TextStyle(fontSize: 12, color: PlayerUiSignalTheme.text.withAlpha(179)),
             ),
         ],
       ),
@@ -3087,7 +3110,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 if (showInsideTime)
                   Text(
                     _bubbleTimeLabel(context, message.createdAt),
-                    style: const TextStyle(fontSize: 10, color: Colors.white),
+                    style: TextStyle(fontSize: 10, color: Colors.white),
                   ),
                 if (mine)
                   Padding(
@@ -3253,11 +3276,16 @@ class _ChatScreenState extends State<ChatScreen> {
                 ? AppBar(
                     backgroundColor: PlayerUiSignalTheme.secondaryColor,
                     // Dark app bar: white status-bar icons (the theme default gave black ones).
-                    systemOverlayStyle: SystemUiOverlayStyle.light,
+                    systemOverlayStyle: PlayerUiSignalTheme.isDark
+                        ? SystemUiOverlayStyle.light
+                        : SystemUiOverlayStyle.dark,
+                    // Stays the page colour when messages scroll under it.
+                    scrolledUnderElevation: 0,
+                    surfaceTintColor: Colors.transparent,
                     automaticallyImplyLeading: false,
                     leadingWidth: 48,
                     leading: IconButton(
-                      icon: const Icon(
+                      icon: Icon(
                         Icons.close,
                         color: PlayerUiSignalTheme.primaryDarkColor,
                       ),
@@ -3275,7 +3303,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     actions: [
                       if (_selectedMessageIds.length == 1)
                         IconButton(
-                          icon: const Icon(
+                          icon: Icon(
                             Icons.reply,
                             color: PlayerUiSignalTheme.primaryDarkColor,
                           ),
@@ -3311,7 +3339,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               msg.metadata['timelineOnly'] != true;
                           if (!canEdit) return const SizedBox.shrink();
                           return IconButton(
-                            icon: const Icon(
+                            icon: Icon(
                               Icons.edit_outlined,
                               color: PlayerUiSignalTheme.primaryDarkColor,
                             ),
@@ -3321,7 +3349,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         },
                       ),
                       IconButton(
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.delete_outline,
                           color: PlayerUiSignalTheme.primaryDarkColor,
                         ),
@@ -3329,7 +3357,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         onPressed: () => _handleDeleteSelection(controller),
                       ),
                       IconButton(
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.forward,
                           color: PlayerUiSignalTheme.primaryDarkColor,
                         ),
@@ -3370,12 +3398,17 @@ class _ChatScreenState extends State<ChatScreen> {
                   )
                 : AppBar(
                     backgroundColor: PlayerUiSignalTheme.secondaryColor,
-                    systemOverlayStyle: SystemUiOverlayStyle.light,
+                    systemOverlayStyle: PlayerUiSignalTheme.isDark
+                        ? SystemUiOverlayStyle.light
+                        : SystemUiOverlayStyle.dark,
+                    // Stays the page colour when messages scroll under it.
+                    scrolledUnderElevation: 0,
+                    surfaceTintColor: Colors.transparent,
                     automaticallyImplyLeading: false,
                     leading: IconButton(
                       onPressed: () => Navigator.of(context).maybePop(),
                       tooltip: 'Back',
-                      icon: SvgPicture.asset(
+                      icon: ThemedSvg.asset(
                         'assets/icon/ic_back.svg',
                         package: 'clubcommon',
                         width: 22,
@@ -3410,8 +3443,8 @@ class _ChatScreenState extends State<ChatScreen> {
                             widget.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: PlayerUiSignalTheme.primaryDarkColor,
+                            style: TextStyle(
+                              color: PlayerUiSignalTheme.text,
                               fontSize: 14,
                             ),
                           ),
@@ -3421,7 +3454,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     actions: [
                       if (!kReleaseMode) ...[
                         IconButton(
-                          icon: const Icon(
+                          icon: Icon(
                             Icons.call_outlined,
                             color: PlayerUiSignalTheme.primaryDarkColor,
                           ),
@@ -3430,7 +3463,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               unawaited(_openCallSession(isVideo: false)),
                         ),
                         IconButton(
-                          icon: const Icon(
+                          icon: Icon(
                             Icons.videocam_outlined,
                             color: PlayerUiSignalTheme.primaryDarkColor,
                           ),
@@ -3445,8 +3478,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(14),
                         ),
-                        color: PlayerUiSignalTheme.secondaryColor,
-                        icon: const Icon(
+                        color: PlayerUiSignalTheme.surface,
+                        icon: Icon(
                           Icons.more_vert,
                           color: PlayerUiSignalTheme.primaryDarkColor,
                         ),
@@ -3472,7 +3505,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           }
                         },
                         itemBuilder: (_) => [
-                          const PopupMenuItem<_ChatMenuAction>(
+                          PopupMenuItem<_ChatMenuAction>(
                             value: _ChatMenuAction.details,
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
@@ -3487,7 +3520,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               ],
                             ),
                           ),
-                          const PopupMenuItem<_ChatMenuAction>(
+                          PopupMenuItem<_ChatMenuAction>(
                             value: _ChatMenuAction.customize,
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
@@ -3778,9 +3811,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                                   previousVisibleMessage
                                                       ?.createdAt,
                                             ),
-                                            style: const TextStyle(
+                                            style: TextStyle(
                                               fontSize: 11,
-                                              color: Colors.white54,
+                                              color: PlayerUiSignalTheme.text.withAlpha(138),
                                               fontWeight: FontWeight.w500,
                                             ),
                                           ),
@@ -3889,9 +3922,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                               previousTime:
                                                   olderMessage?.createdAt,
                                             ),
-                                            style: const TextStyle(
+                                            style: TextStyle(
                                               fontSize: 11,
-                                              color: Colors.white54,
+                                              color: PlayerUiSignalTheme.text.withAlpha(138),
                                               fontWeight: FontWeight.w500,
                                             ),
                                           ),
@@ -4104,9 +4137,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                                       context,
                                                       message.createdAt,
                                                     ),
-                                                    style: const TextStyle(
+                                                    style: TextStyle(
                                                       fontSize: 10,
-                                                      color: Colors.white70,
+                                                      color: _appearance.messageTextColor.withAlpha(179),
                                                     ),
                                                   ),
                                                 ),
@@ -4250,9 +4283,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                             previousTime:
                                                 olderMessage?.createdAt,
                                           ),
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                             fontSize: 11,
-                                            color: Colors.white54,
+                                            color: PlayerUiSignalTheme.text.withAlpha(138),
                                             fontWeight: FontWeight.w500,
                                           ),
                                         ),
@@ -4330,7 +4363,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                           child: Row(
                             children: [
-                              const Icon(
+                              Icon(
                                 Icons.edit_outlined,
                                 size: 16,
                                 color: PlayerUiSignalTheme.primaryDarkColor,
@@ -4340,7 +4373,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Text(
+                                    Text(
                                       'Edit message',
                                       style: TextStyle(
                                         color: PlayerUiSignalTheme
@@ -4353,8 +4386,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                       _editTargetMessage!.body,
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white70,
+                                      style: TextStyle(
+                                        color: PlayerUiSignalTheme.text.withAlpha(179),
                                         fontSize: 12,
                                       ),
                                     ),
@@ -4363,9 +4396,9 @@ class _ChatScreenState extends State<ChatScreen> {
                               ),
                               IconButton(
                                 onPressed: _cancelEditing,
-                                icon: const Icon(
+                                icon: Icon(
                                   Icons.close,
-                                  color: Colors.white70,
+                                  color: PlayerUiSignalTheme.text.withAlpha(179),
                                 ),
                               ),
                             ],
@@ -4413,8 +4446,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                   children: [
                                     Text(
                                       'Replying to ${replyTo.senderName}',
-                                      style: const TextStyle(
-                                        color: Colors.white70,
+                                      style: TextStyle(
+                                        color: PlayerUiSignalTheme.text.withAlpha(179),
                                         fontSize: 11,
                                       ),
                                     ),
@@ -4425,8 +4458,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                       ),
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
+                                      style: TextStyle(
+                                        color: PlayerUiSignalTheme.text,
                                       ),
                                     ),
                                   ],
@@ -4434,9 +4467,9 @@ class _ChatScreenState extends State<ChatScreen> {
                               ),
                               IconButton(
                                 onPressed: controller.clearReplyTarget,
-                                icon: const Icon(
+                                icon: Icon(
                                   Icons.close,
-                                  color: Colors.white70,
+                                  color: PlayerUiSignalTheme.text.withAlpha(179),
                                 ),
                               ),
                             ],
@@ -4451,7 +4484,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           decoration: BoxDecoration(
                             border: Border(
                               top: BorderSide(
-                                color: Colors.white.withValues(alpha: 0.06),
+                                color: PlayerUiSignalTheme.text.withValues(alpha: 0.06),
                               ),
                             ),
                           ),
@@ -4502,14 +4535,14 @@ class _ChatScreenState extends State<ChatScreen> {
                                     minHeight: _ComposerIconButton.size,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.05),
+                                    color: PlayerUiSignalTheme.text.withValues(alpha: 0.05),
                                     borderRadius: BorderRadius.circular(10),
                                     border: Border.all(
                                       color: composerFocused
                                           ? const Color(
                                               0xFF38BDF8,
                                             ).withValues(alpha: 0.5)
-                                          : Colors.white.withValues(
+                                          : PlayerUiSignalTheme.text.withValues(
                                               alpha: 0.08,
                                             ),
                                     ),
@@ -4677,7 +4710,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             elevation: 2,
                             backgroundColor:
                                 PlayerUiSignalTheme.primaryDarkColor,
-                            foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                            foregroundColor: PlayerUiSignalTheme.onAccent,
                             onPressed: _scrollToLatestMessages,
                             child: const Icon(
                               Icons.keyboard_arrow_down,
@@ -4721,7 +4754,7 @@ class _ChatScreenState extends State<ChatScreen> {
         decoration: BoxDecoration(
           color: PlayerUiSignalTheme.secondaryColor.withAlpha(230),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white.withAlpha(26)),
+          border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(26)),
         ),
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -4765,10 +4798,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   height: 32,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: Colors.white.withAlpha(18),
+                    color: PlayerUiSignalTheme.text.withAlpha(18),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.add, size: 20, color: Colors.white),
+                  child: Icon(Icons.add, size: 20, color: PlayerUiSignalTheme.text),
                 ),
               ),
             ],
@@ -4875,8 +4908,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     if (totalCount > 1)
                       Text(
                         ' $totalCount',
-                        style: const TextStyle(
-                          color: Colors.white70,
+                        style: TextStyle(
+                          color: PlayerUiSignalTheme.text.withAlpha(179),
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
                         ),
@@ -4956,7 +4989,7 @@ class _ChatScreenState extends State<ChatScreen> {
           top: false,
           child: Container(
             height: 320,
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               color: PlayerUiSignalTheme.secondaryColor,
               borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
             ),
@@ -5367,12 +5400,12 @@ class _ComposerIconButton extends StatelessWidget {
       child: Material(
         color: solid
             ? fillColor
-            : Colors.white.withValues(alpha: active ? 0.12 : 0.05),
+            : PlayerUiSignalTheme.text.withValues(alpha: active ? 0.12 : 0.05),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
           side: solid
               ? BorderSide.none
-              : BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+              : BorderSide(color: PlayerUiSignalTheme.text.withValues(alpha: 0.08)),
         ),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
@@ -5540,15 +5573,15 @@ class _VoiceRecorderDialogState extends State<_VoiceRecorderDialog> {
       titlePadding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
       title: Row(
         children: [
-          const Expanded(
+          Expanded(
             child: Text(
               'Voice recording',
-              style: TextStyle(color: Colors.white, fontSize: 18),
+              style: TextStyle(color: PlayerUiSignalTheme.text, fontSize: 18),
             ),
           ),
           IconButton(
             onPressed: _busy ? null : _cancelRecording,
-            icon: const Icon(Icons.close, color: Colors.white70),
+            icon: Icon(Icons.close, color: PlayerUiSignalTheme.text.withAlpha(179)),
           ),
         ],
       ),
@@ -5561,7 +5594,7 @@ class _VoiceRecorderDialogState extends State<_VoiceRecorderDialog> {
             decoration: BoxDecoration(
               color: Colors.black.withAlpha(24),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withAlpha(24)),
+              border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(24)),
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -5578,7 +5611,7 @@ class _VoiceRecorderDialogState extends State<_VoiceRecorderDialog> {
                           decoration: BoxDecoration(
                             color: _isRecording
                                 ? Colors.redAccent
-                                : Colors.white38,
+                                : PlayerUiSignalTheme.text.withAlpha(97),
                             borderRadius: BorderRadius.circular(999),
                           ),
                         ),
@@ -5591,8 +5624,8 @@ class _VoiceRecorderDialogState extends State<_VoiceRecorderDialog> {
           const SizedBox(height: 12),
           Text(
             _elapsedLabel,
-            style: const TextStyle(
-              color: Colors.white,
+            style: TextStyle(
+              color: PlayerUiSignalTheme.text,
               fontSize: 16,
               fontWeight: FontWeight.w600,
             ),
@@ -5683,11 +5716,11 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
       appBar: AppBar(
         backgroundColor: PlayerUiSignalTheme.secondaryColor,
         titleSpacing: 20,
-        title: const Text(
+        title: Text(
           'Forward message',
           style: TextStyle(color: PlayerUiSignalTheme.primaryDarkColor),
         ),
-        iconTheme: const IconThemeData(
+        iconTheme: IconThemeData(
           color: PlayerUiSignalTheme.primaryDarkColor,
         ),
       ),
@@ -5702,12 +5735,12 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
                   _query = value;
                 });
               },
-              cursorColor: Colors.white,
-              style: const TextStyle(color: Colors.white),
+              cursorColor: PlayerUiSignalTheme.text,
+              style: TextStyle(color: PlayerUiSignalTheme.text),
               decoration: InputDecoration(
                 hintText: 'Search chats',
-                hintStyle: const TextStyle(color: Colors.white70),
-                prefixIcon: const Icon(Icons.search, color: Colors.white70),
+                hintStyle: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
+                prefixIcon: Icon(Icons.search, color: PlayerUiSignalTheme.text.withAlpha(179)),
                 filled: true,
                 fillColor: PlayerUiSignalTheme.secondaryColor.withAlpha(180),
                 border: OutlineInputBorder(
@@ -5719,10 +5752,10 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
           ),
           Expanded(
             child: threads.isEmpty
-                ? const Center(
+                ? Center(
                     child: Text(
                       'No chats found',
-                      style: TextStyle(color: Colors.white70),
+                      style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                     ),
                   )
                 : ListView.builder(
@@ -5754,7 +5787,7 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
                                 thread.title,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: Colors.white),
+                                style: TextStyle(color: PlayerUiSignalTheme.text),
                               ),
                             ),
                             if (thread.unreadCount > 0)
@@ -5772,8 +5805,8 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
                                   thread.unreadCount > 99
                                       ? '99+'
                                       : thread.unreadCount.toString(),
-                                  style: const TextStyle(
-                                    color: PlayerUiSignalTheme.secondaryColor,
+                                  style: TextStyle(
+                                    color: PlayerUiSignalTheme.onAccent,
                                     fontSize: 11,
                                     fontWeight: FontWeight.w700,
                                   ),
@@ -5787,7 +5820,7 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
                                 thread.lastMessage!,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: Colors.white70),
+                                style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                               ),
                         trailing: Icon(
                           selected
@@ -5795,7 +5828,7 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
                               : Icons.radio_button_unchecked,
                           color: selected
                               ? PlayerUiSignalTheme.primaryDarkColor
-                              : Colors.white70,
+                              : PlayerUiSignalTheme.text.withAlpha(179),
                         ),
                       );
                     },
@@ -5817,7 +5850,7 @@ class _ForwardChatPickerScreenState extends State<_ForwardChatPickerScreen> {
                         ),
                   style: FilledButton.styleFrom(
                     backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                    foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                    foregroundColor: PlayerUiSignalTheme.onAccent,
                   ),
                   child: const Text('Forward'),
                 ),
@@ -5976,15 +6009,15 @@ class _CallSessionScreenState extends State<_CallSessionScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(
+                        Icon(
                           Icons.person,
                           size: 54,
-                          color: Colors.white70,
+                          color: PlayerUiSignalTheme.text.withAlpha(179),
                         ),
                         const SizedBox(height: 8),
                         Text(
                           _snapshot.remoteDisplayName ?? widget.chatTitle,
-                          style: const TextStyle(color: Colors.white70),
+                          style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                         ),
                       ],
                     ),
@@ -6042,7 +6075,7 @@ class _CallSessionScreenState extends State<_CallSessionScreen> {
       backgroundColor: const Color(0xFF0B1524),
       appBar: AppBar(
         backgroundColor: const Color(0xFF0B1524),
-        iconTheme: const IconThemeData(color: Colors.white),
+        iconTheme: IconThemeData(color: PlayerUiSignalTheme.text),
         title: Text(
           widget.isVideo ? 'Video call' : 'Voice call',
           style: const TextStyle(color: Colors.white),
@@ -6060,17 +6093,17 @@ class _CallSessionScreenState extends State<_CallSessionScreen> {
                         CircleAvatar(
                           radius: 52,
                           backgroundColor: Colors.white12,
-                          child: const Icon(
+                          child: Icon(
                             Icons.call,
                             size: 42,
-                            color: Colors.white,
+                            color: PlayerUiSignalTheme.text,
                           ),
                         ),
                         const SizedBox(height: 16),
                         Text(
                           widget.chatTitle,
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: PlayerUiSignalTheme.text,
                             fontSize: 20,
                             fontWeight: FontWeight.w600,
                           ),
@@ -6080,8 +6113,8 @@ class _CallSessionScreenState extends State<_CallSessionScreen> {
                           _snapshot.phase == ChatCallPhase.connected
                               ? _elapsed
                               : _stateLabel,
-                          style: const TextStyle(
-                            color: Colors.white70,
+                          style: TextStyle(
+                            color: PlayerUiSignalTheme.text.withAlpha(179),
                             fontSize: 14,
                           ),
                         ),
@@ -6099,8 +6132,8 @@ class _CallSessionScreenState extends State<_CallSessionScreen> {
                           const SizedBox(height: 8),
                           Text(
                             _snapshot.remoteUserId!,
-                            style: const TextStyle(
-                              color: Colors.white38,
+                            style: TextStyle(
+                              color: PlayerUiSignalTheme.text.withAlpha(97),
                               fontSize: 12,
                             ),
                           ),
@@ -6148,7 +6181,7 @@ class _CallSessionScreenState extends State<_CallSessionScreen> {
                       },
                       icon: Icon(
                         micMuted ? Icons.mic_off : Icons.mic,
-                        color: Colors.white,
+                        color: PlayerUiSignalTheme.text,
                       ),
                     ),
                   ),
@@ -6163,7 +6196,7 @@ class _CallSessionScreenState extends State<_CallSessionScreen> {
                           nav.pop();
                         }
                       },
-                      icon: const Icon(Icons.call_end, color: Colors.white),
+                      icon: Icon(Icons.call_end, color: PlayerUiSignalTheme.text),
                     ),
                   ),
                   CircleAvatar(
@@ -6287,7 +6320,7 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
           color: color,
           shape: BoxShape.circle,
           border: Border.all(
-            color: selected ? Colors.white : Colors.white24,
+            color: selected ? PlayerUiSignalTheme.text : PlayerUiSignalTheme.text.withAlpha(61),
             width: selected ? 2.2 : 1,
           ),
         ),
@@ -6301,11 +6334,11 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
       backgroundColor: PlayerUiSignalTheme.mobileBackgroundColor,
       appBar: AppBar(
         backgroundColor: PlayerUiSignalTheme.secondaryColor,
-        title: const Text(
+        title: Text(
           'Customize chat',
           style: TextStyle(color: PlayerUiSignalTheme.primaryDarkColor),
         ),
-        iconTheme: const IconThemeData(
+        iconTheme: IconThemeData(
           color: PlayerUiSignalTheme.primaryDarkColor,
         ),
         actions: [
@@ -6318,9 +6351,47 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
       body: ListView(
         padding: const EdgeInsets.all(14),
         children: [
-          const Text(
+          Text(
+            'Colors',
+            style: TextStyle(color: PlayerUiSignalTheme.text, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              ChoiceChip(
+                selected: _draft.followTheme,
+                label: const Text('Match app theme'),
+                onSelected: (_) => setState(
+                  () => _draft = _draft.copyWith(followTheme: true),
+                ),
+              ),
+              ChoiceChip(
+                selected: !_draft.followTheme,
+                label: const Text('Custom'),
+                // Starts from the colours shown now, so nothing jumps.
+                onSelected: (_) => setState(
+                  () => _draft = _draft.copyWith(
+                    followTheme: false,
+                    myBubbleColor: _draft.myBubbleColor,
+                    otherBubbleColor: _draft.otherBubbleColor,
+                    messageTextColor: _draft.messageTextColor,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (_draft.followTheme)
+            Text(
+              'Bubbles and text use your app theme colors and change with it.',
+              style: TextStyle(color: PlayerUiSignalTheme.textMuted, fontSize: 12),
+            ),
+          const SizedBox(height: 10),
+          if (!_draft.followTheme) ...[
+          Text(
             'My bubble color',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+            style: TextStyle(color: PlayerUiSignalTheme.text, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Wrap(
@@ -6338,9 +6409,9 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
                 .toList(growable: false),
           ),
           const SizedBox(height: 10),
-          const Text(
+          Text(
             'Other user bubble color',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+            style: TextStyle(color: PlayerUiSignalTheme.text, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Wrap(
@@ -6358,9 +6429,10 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
                 .toList(growable: false),
           ),
           const SizedBox(height: 10),
-          const Text(
+          ],
+          Text(
             'Message font',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+            style: TextStyle(color: PlayerUiSignalTheme.text, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Wrap(
@@ -6379,9 +6451,10 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
                 .toList(growable: false),
           ),
           const SizedBox(height: 10),
-          const Text(
+          if (!_draft.followTheme) ...[
+          Text(
             'Message font color',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+            style: TextStyle(color: PlayerUiSignalTheme.text, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Wrap(
@@ -6399,9 +6472,10 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
                 .toList(growable: false),
           ),
           const SizedBox(height: 10),
-          const Text(
+          ],
+          Text(
             'Chat background (online)',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+            style: TextStyle(color: PlayerUiSignalTheme.text, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Wrap(
@@ -6417,17 +6491,17 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
                   height: 64,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: Colors.white10,
+                    color: PlayerUiSignalTheme.text.withAlpha(26),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                       color: _draft.backgroundImageUrl == null
-                          ? Colors.white
-                          : Colors.white24,
+                          ? PlayerUiSignalTheme.text
+                          : PlayerUiSignalTheme.text.withAlpha(61),
                     ),
                   ),
-                  child: const Text(
+                  child: Text(
                     'None',
-                    style: TextStyle(color: Colors.white),
+                    style: TextStyle(color: PlayerUiSignalTheme.text),
                   ),
                 ),
               ),
@@ -6444,8 +6518,8 @@ class _ChatCustomizationScreenState extends State<_ChatCustomizationScreen> {
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
                         color: _draft.backgroundImageUrl == url
-                            ? Colors.white
-                            : Colors.white24,
+                            ? PlayerUiSignalTheme.text
+                            : PlayerUiSignalTheme.text.withAlpha(61),
                         width: _draft.backgroundImageUrl == url ? 2 : 1,
                       ),
                     ),
@@ -6587,7 +6661,7 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet>
             }
           : null,
       trailing: isMe && reactionEventId.isNotEmpty
-          ? const Icon(Icons.close, size: 16, color: Colors.white38)
+          ? Icon(Icons.close, size: 16, color: PlayerUiSignalTheme.text.withAlpha(97))
           : null,
       leading: Stack(
         clipBehavior: Clip.none,
@@ -6626,8 +6700,8 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet>
       ),
       title: Text(
         isMe ? '$displayName (You)' : displayName,
-        style: const TextStyle(
-          color: Colors.white,
+        style: TextStyle(
+          color: PlayerUiSignalTheme.text,
           fontSize: 14,
           fontWeight: FontWeight.w500,
         ),
@@ -6638,7 +6712,7 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet>
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: PlayerUiSignalTheme.secondaryColor,
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -6650,7 +6724,7 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet>
             height: 4,
             margin: const EdgeInsets.only(top: 10, bottom: 4),
             decoration: BoxDecoration(
-              color: Colors.white.withAlpha(60),
+              color: PlayerUiSignalTheme.text.withAlpha(60),
               borderRadius: BorderRadius.circular(99),
             ),
           ),
@@ -6661,9 +6735,9 @@ class _ReactionDetailSheetState extends State<_ReactionDetailSheet>
             tabAlignment: TabAlignment.start,
             indicatorColor: PlayerUiSignalTheme.primaryDarkColor,
             indicatorSize: TabBarIndicatorSize.tab,
-            labelColor: Colors.white,
-            unselectedLabelColor: Colors.white54,
-            dividerColor: Colors.white.withAlpha(20),
+            labelColor: PlayerUiSignalTheme.text,
+            unselectedLabelColor: PlayerUiSignalTheme.text.withAlpha(138),
+            dividerColor: PlayerUiSignalTheme.text.withAlpha(20),
             tabs: _tabs.map((tab) => Tab(child: _buildTabLabel(tab))).toList(),
           ),
           // Tab content — fills remaining height and scrolls

@@ -114,7 +114,7 @@ class _OnboardingAdditionalInfoScreenState
               _requiredField(
                 _firstNameController,
                 'First name',
-                prefix: const Icon(
+                prefix: Icon(
                   Icons.person_outline,
                   color: PlayerUiSignalTheme.primaryDarkColor,
                   size: 20,
@@ -124,7 +124,7 @@ class _OnboardingAdditionalInfoScreenState
               _requiredField(
                 _lastNameController,
                 'Last name',
-                prefix: const Icon(
+                prefix: Icon(
                   Icons.person_outline,
                   color: PlayerUiSignalTheme.primaryDarkColor,
                   size: 20,
@@ -134,7 +134,7 @@ class _OnboardingAdditionalInfoScreenState
               _requiredField(
                 _displayNameController,
                 'Display name',
-                prefix: const Icon(
+                prefix: Icon(
                   Icons.person_outline,
                   color: PlayerUiSignalTheme.primaryDarkColor,
                   size: 20,
@@ -235,7 +235,7 @@ class _OnboardingAdditionalInfoScreenState
               FilledButton(
                 style: FilledButton.styleFrom(
                   backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                  foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                  foregroundColor: PlayerUiSignalTheme.onAccent,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
                 onPressed: loading ? null : _save,

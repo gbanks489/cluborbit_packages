@@ -1,7 +1,9 @@
 export 'src/config/club_environment.dart';
 export 'src/network/club_http_utils.dart';
 export 'src/providers/user_provider.dart';
+export 'src/theme/club_orbit_palette.dart';
 export 'src/theme/playerui_theme.dart';
+export 'src/theme/themed_svg.dart';
 export 'src/utils/auth_state_cache.dart';
 export 'src/utils/error_notifier.dart';
 export 'src/utils/utils.dart';

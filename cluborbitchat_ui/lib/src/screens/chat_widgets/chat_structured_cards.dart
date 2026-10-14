@@ -181,8 +181,8 @@ class _StructuredLocationCard extends StatelessWidget {
           ),
         Text(
           data.title,
-          style: const TextStyle(
-            color: Colors.white,
+          style: TextStyle(
+            color: PlayerUiSignalTheme.text,
             fontSize: 15,
             fontWeight: FontWeight.w700,
           ),
@@ -192,7 +192,7 @@ class _StructuredLocationCard extends StatelessWidget {
             padding: const EdgeInsets.only(top: 4),
             child: Text(
               data.details!,
-              style: const TextStyle(color: Colors.white70, fontSize: 13),
+              style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179), fontSize: 13),
             ),
           ),
         if ((data.link ?? '').isNotEmpty)
@@ -331,13 +331,13 @@ class _StructuredContactCard extends StatelessWidget {
           children: [
             CircleAvatar(
               radius: 18,
-              backgroundColor: Colors.white.withAlpha(16),
+              backgroundColor: PlayerUiSignalTheme.text.withAlpha(16),
               backgroundImage: avatarImage,
               child: avatarImage == null
                   ? Text(
                       initials,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: PlayerUiSignalTheme.text,
                         fontWeight: FontWeight.w700,
                       ),
                     )
@@ -347,8 +347,8 @@ class _StructuredContactCard extends StatelessWidget {
             Expanded(
               child: Text(
                 data.title,
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: PlayerUiSignalTheme.text,
                   fontSize: 15,
                   fontWeight: FontWeight.w700,
                 ),
@@ -363,15 +363,15 @@ class _StructuredContactCard extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
               decoration: BoxDecoration(
-                color: Colors.white.withAlpha(12),
+                color: PlayerUiSignalTheme.text.withAlpha(12),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.person_add_alt_1_outlined, color: Colors.white70),
+                  Icon(Icons.person_add_alt_1_outlined, color: PlayerUiSignalTheme.text.withAlpha(179)),
                   SizedBox(width: 6),
-                  Text('Save contact', style: TextStyle(color: Colors.white70)),
+                  Text('Save contact', style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179))),
                 ],
               ),
             ),
@@ -405,14 +405,14 @@ class _StructuredContactCard extends StatelessWidget {
                       Icon(
                         _iconForField(entry.key),
                         size: 15,
-                        color: Colors.white70,
+                        color: PlayerUiSignalTheme.text.withAlpha(179),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           entry.value,
-                          style: const TextStyle(
-                            color: Colors.white70,
+                          style: TextStyle(
+                            color: PlayerUiSignalTheme.text.withAlpha(179),
                             fontSize: 13,
                           ),
                         ),
@@ -477,8 +477,8 @@ class _StructuredPollCard extends StatelessWidget {
         if (showTitle) ...[
           Text(
             data.title,
-            style: const TextStyle(
-              color: Colors.white,
+            style: TextStyle(
+              color: PlayerUiSignalTheme.text,
               fontSize: 15,
               fontWeight: FontWeight.w700,
             ),
@@ -508,7 +508,7 @@ class _StructuredPollCard extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: isSelected
                         ? accent.withAlpha(22)
-                        : Colors.white.withAlpha(10),
+                        : PlayerUiSignalTheme.text.withAlpha(10),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
                       color: isSelected
@@ -541,8 +541,8 @@ class _StructuredPollCard extends StatelessWidget {
                       Expanded(
                         child: Text(
                           entry.value,
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: PlayerUiSignalTheme.text,
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
@@ -552,7 +552,7 @@ class _StructuredPollCard extends StatelessWidget {
                       Text(
                         '$optionVotes',
                         style: TextStyle(
-                          color: isSelected ? accent : Colors.white70,
+                          color: isSelected ? accent : PlayerUiSignalTheme.text.withAlpha(179),
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
                         ),
@@ -571,12 +571,12 @@ class _StructuredPollCard extends StatelessWidget {
               Expanded(
                 child: Text(
                   totalVotes == 1 ? '1 vote' : '$totalVotes votes',
-                  style: const TextStyle(color: Colors.white60, fontSize: 12),
+                  style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(153), fontSize: 12),
                 ),
               ),
               Text(
                 data.allowsMultiple ? 'Multi-select' : 'Single-select',
-                style: const TextStyle(color: Colors.white60, fontSize: 12),
+                style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(153), fontSize: 12),
               ),
             ],
           ),

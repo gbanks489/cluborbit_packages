@@ -236,7 +236,7 @@ class _UserProfileEditScreenState extends State<UserProfileEditScreen> {
         leading: IconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           tooltip: 'Back',
-          icon: SvgPicture.asset(
+          icon: ThemedSvg.asset(
             'assets/icon/ic_back.svg',
             package: 'clubcommon',
             width: 22,
@@ -257,7 +257,7 @@ class _UserProfileEditScreenState extends State<UserProfileEditScreen> {
             onPressed: loading ? null : _save,
             child: Text(
               loading ? 'Saving...' : 'Save',
-              style: const TextStyle(
+              style: TextStyle(
                 color: PlayerUiSignalTheme.primaryDarkColor,
                 fontFamily: 'Poppins',
                 fontWeight: FontWeight.w700,

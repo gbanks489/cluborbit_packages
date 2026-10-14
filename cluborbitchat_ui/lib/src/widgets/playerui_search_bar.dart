@@ -9,7 +9,7 @@ class PlayerUiSearchBar extends StatefulWidget {
     this.controller,
     this.onChanged,
     this.title = 'chats and users',
-    this.accentColor = PlayerUiSignalTheme.secondaryColor,
+    this.accentColor,
     this.debounceDuration = const Duration(milliseconds: 220),
     this.trailing,
   });
@@ -17,7 +17,8 @@ class PlayerUiSearchBar extends StatefulWidget {
   final TextEditingController? controller;
   final ValueChanged<String>? onChanged;
   final String title;
-  final Color accentColor;
+  /// The search icon and the [title] colour; the theme's accent by default.
+  final Color? accentColor;
   final Duration debounceDuration;
 
   /// Shown at the right of the field while it's empty (the clear button takes its place once
@@ -29,7 +30,6 @@ class PlayerUiSearchBar extends StatefulWidget {
 }
 
 class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
-  static const Color _fillColor = Color(0xFF1E2942);
   static final OutlineInputBorder _noOutline = OutlineInputBorder(
     borderRadius: BorderRadius.circular(14),
     borderSide: BorderSide.none,
@@ -77,6 +77,11 @@ class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = ClubOrbitPalette.of(context);
+    final accent = widget.accentColor ?? palette.accent;
+    // A solid fill sets the field apart from the background: the theme's input colour on dark
+    // themes, a light grey on white.
+    final fill = palette.isDark ? palette.input : palette.surface;
     return Stack(
       alignment: Alignment.centerLeft,
       children: [
@@ -84,17 +89,17 @@ class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
           controller: _controller,
           focusNode: _focusNode,
           onChanged: _emitChanged,
-          cursorColor: Colors.white,
+          cursorColor: palette.text,
           selectionControls: MaterialTextSelectionControls(),
-          style: const TextStyle(
+          style: TextStyle(
             fontFamily: 'Poppins',
-            color: Colors.white,
+            color: palette.text,
             fontSize: 16,
             fontWeight: FontWeight.w500,
           ),
           decoration: InputDecoration(
             contentPadding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
-            prefixIcon: Icon(Icons.search, color: widget.accentColor),
+            prefixIcon: Icon(Icons.search, color: accent),
             suffixIcon: _controller.text.isEmpty
                 ? widget.trailing
                 : IconButton(
@@ -104,13 +109,12 @@ class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
                       widget.onChanged?.call('');
                       setState(() {});
                     },
-                    icon: Icon(Icons.clear, color: widget.accentColor),
+                    icon: Icon(Icons.clear, color: accent),
                   ),
-            // No outline: a solid, lighter-navy fill sets the field apart from the background.
             border: _noOutline,
             enabledBorder: _noOutline,
             focusedBorder: _noOutline,
-            fillColor: _fillColor,
+            fillColor: fill,
             filled: true,
           ),
         ),
@@ -126,13 +130,13 @@ class _PlayerUiSearchBarState extends State<PlayerUiSearchBar> {
                     fontWeight: FontWeight.w500,
                   ),
                   children: [
-                    const TextSpan(
+                    TextSpan(
                       text: 'Search ',
-                      style: TextStyle(color: Colors.white),
+                      style: TextStyle(color: palette.text),
                     ),
                     TextSpan(
                       text: widget.title,
-                      style: TextStyle(color: widget.accentColor),
+                      style: TextStyle(color: accent),
                     ),
                   ],
                 ),

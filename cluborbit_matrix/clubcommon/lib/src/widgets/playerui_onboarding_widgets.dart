@@ -101,7 +101,7 @@ class PlayerUiSelectorField extends StatelessWidget {
                       focusedErrorBorder: InputBorder.none,
                     ).copyWith(
                       labelText: label,
-                      labelStyle: const TextStyle(
+                      labelStyle: TextStyle(
                         fontFamily: 'Poppins',
                         color: PlayerUiSignalTheme.primaryDarkColor,
                         fontSize: 14,
@@ -142,7 +142,7 @@ class PlayerUiDateOfBirthField extends StatelessWidget {
     return PlayerUiSelectorField(
       label: 'Date of Birth',
       onTap: onTap,
-      prefix: const PlayerUiSvgPrefix(
+      prefix: PlayerUiSvgPrefix(
         assetName: 'packages/clubcommon/assets/icon/ic_dob.svg',
         color: PlayerUiSignalTheme.primaryDarkColor,
       ),
@@ -178,7 +178,7 @@ class PlayerUiProfileUploadCard extends StatelessWidget {
         Center(
           child: Container(
             padding: const EdgeInsets.all(4),
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: PlayerUiSignalTheme.primaryDarkColor,
             ),

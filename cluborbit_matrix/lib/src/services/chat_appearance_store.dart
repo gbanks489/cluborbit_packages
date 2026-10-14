@@ -14,6 +14,7 @@ class ChatAppearanceRecord {
     required this.messageTextColorValue,
     required this.messageFontFamily,
     this.backgroundImageUrl,
+    this.followTheme = false,
   });
 
   final String chatKey;
@@ -22,6 +23,9 @@ class ChatAppearanceRecord {
   final int messageTextColorValue;
   final String messageFontFamily;
   final String? backgroundImageUrl;
+
+  /// Use the app's colour theme instead of the custom colours above.
+  final bool followTheme;
 }
 
 class ChatAppearanceStore {
@@ -89,6 +93,7 @@ class ChatAppearanceStore {
       messageTextColorValue: _asInt(row['message_text_color']) ?? 0,
       messageFontFamily: (row['message_font_family'] ?? '').toString().trim(),
       backgroundImageUrl: _asTrimmedString(row['background_image_url']),
+      followTheme: _asInt(row['follow_theme']) == 1,
     );
     _cache[normalizedKey] = record;
     return record;
@@ -126,6 +131,7 @@ class ChatAppearanceStore {
         'message_text_color': record.messageTextColorValue,
         'message_font_family': record.messageFontFamily,
         'background_image_url': record.backgroundImageUrl,
+        'follow_theme': record.followTheme ? 1 : 0,
         'updated_at_ms': DateTime.now().millisecondsSinceEpoch,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
     } on sqflite.DatabaseException catch (error) {
@@ -140,6 +146,7 @@ class ChatAppearanceStore {
         'message_text_color': record.messageTextColorValue,
         'message_font_family': record.messageFontFamily,
         'background_image_url': record.backgroundImageUrl,
+        'follow_theme': record.followTheme ? 1 : 0,
         'updated_at_ms': DateTime.now().millisecondsSinceEpoch,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
@@ -222,6 +229,7 @@ class ChatAppearanceStore {
         messageTextColorValue: _asInt(row['message_text_color']) ?? 0,
         messageFontFamily: (row['message_font_family'] ?? '').toString().trim(),
         backgroundImageUrl: _asTrimmedString(row['background_image_url']),
+        followTheme: _asInt(row['follow_theme']) == 1,
       );
     }
     _cache
@@ -246,6 +254,7 @@ CREATE TABLE $_tableName (
   message_text_color INTEGER NOT NULL,
   message_font_family TEXT NOT NULL,
   background_image_url TEXT,
+  follow_theme INTEGER NOT NULL DEFAULT 0,
   updated_at_ms INTEGER NOT NULL
 )
 ''';
@@ -259,12 +268,24 @@ CREATE TABLE IF NOT EXISTS $_tableName (
   message_text_color INTEGER NOT NULL,
   message_font_family TEXT NOT NULL,
   background_image_url TEXT,
+  follow_theme INTEGER NOT NULL DEFAULT 0,
   updated_at_ms INTEGER NOT NULL
 )
 ''';
 
-  Future<void> _ensureTableExists(Database database) {
-    return database.execute(_createTableIfNotExistsSql);
+  bool _followThemeColumnChecked = false;
+
+  Future<void> _ensureTableExists(Database database) async {
+    await database.execute(_createTableIfNotExistsSql);
+    // Tables made before the follow-theme option don't have its column yet.
+    if (_followThemeColumnChecked) return;
+    final columns = await database.rawQuery('PRAGMA table_info($_tableName)');
+    if (!columns.any((column) => column['name'] == 'follow_theme')) {
+      await database.execute(
+        'ALTER TABLE $_tableName ADD COLUMN follow_theme INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    _followThemeColumnChecked = true;
   }
 
   bool _isMissingTableError(Object error) {

@@ -68,7 +68,7 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                                 backgroundColor:
                                     PlayerUiSignalTheme.primaryDarkColor,
                                 child: _uploadingAvatar
-                                    ? const SizedBox(
+                                    ? SizedBox(
                                         width: 16,
                                         height: 16,
                                         child: CircularProgressIndicator(
@@ -77,11 +77,11 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                                               .secondaryColor,
                                         ),
                                       )
-                                    : const Icon(
+                                    : Icon(
                                         Icons.photo_camera_outlined,
                                         size: 16,
                                         color:
-                                            PlayerUiSignalTheme.secondaryColor,
+                                            PlayerUiSignalTheme.onAccent,
                                       ),
                               ),
                             ),
@@ -107,7 +107,7 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                           border: Border.all(
                             color: encryption.isEncrypted
                                 ? const Color(0xFF44CC77)
-                                : Colors.white24,
+                                : PlayerUiSignalTheme.text.withAlpha(61),
                           ),
                         ),
                         child: Row(
@@ -120,7 +120,7 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                               size: 18,
                               color: encryption.isEncrypted
                                   ? const Color(0xFF44CC77)
-                                  : Colors.white70,
+                                  : PlayerUiSignalTheme.text.withAlpha(179),
                             ),
                             const SizedBox(width: 8),
                             Text(
@@ -138,24 +138,24 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                         const SizedBox(height: 6),
                         Text(
                           encryption.algorithm!,
-                          style: const TextStyle(
-                            color: Colors.white70,
+                          style: TextStyle(
+                            color: PlayerUiSignalTheme.text.withAlpha(179),
                             fontSize: 12,
                           ),
                         ),
                       ],
                       const SizedBox(height: 6),
-                      const Text(
+                      Text(
                         'Verification sessions only appear after a key verification request starts.',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white70, fontSize: 12),
+                        style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179), fontSize: 12),
                       ),
                       if (!encryption.isEncrypted) ...[
                         const SizedBox(height: 6),
-                        const Text(
+                        Text(
                           'This room does not currently expose an m.room.encryption state event. Older groups stay unencrypted unless the room was created or configured with encryption enabled.',
                           textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white60, fontSize: 12),
+                          style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(153), fontSize: 12),
                         ),
                       ],
                     ],
@@ -173,9 +173,9 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    title: const Text(
+                    title: Text(
                       'No member data loaded yet.',
-                      style: TextStyle(color: Colors.white70),
+                      style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                     ),
                   ),
                 for (final participant in participants)
@@ -199,17 +199,17 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                                 participant.displayName.isEmpty
                                     ? '?'
                                     : participant.displayName[0].toUpperCase(),
-                                style: const TextStyle(color: Colors.white),
+                                style: TextStyle(color: PlayerUiSignalTheme.text),
                               )
                             : null,
                       ),
                       title: Text(
                         participant.displayName,
-                        style: const TextStyle(color: Colors.white),
+                        style: TextStyle(color: PlayerUiSignalTheme.text),
                       ),
                       subtitle: Text(
                         participant.membership,
-                        style: const TextStyle(color: Colors.white70),
+                        style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                       ),
                       trailing: Wrap(
                         spacing: 8,
@@ -219,7 +219,7 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                                 PlayerUiSignalTheme.mobileBackgroundColor,
                             label: Text(
                               _roleLabel(participant.level),
-                              style: const TextStyle(color: Colors.white70),
+                              style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                             ),
                           ),
                           IconButton(
@@ -228,7 +228,7 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                                 participant.userId,
                               );
                             },
-                            icon: const Icon(
+                            icon: Icon(
                               Icons.verified_user_outlined,
                               color: PlayerUiSignalTheme.primaryDarkColor,
                             ),
@@ -250,9 +250,9 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    title: const Text(
+                    title: Text(
                       'No active verification sessions.',
-                      style: TextStyle(color: Colors.white70),
+                      style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                     ),
                   ),
                 for (final session in verifications)
@@ -278,7 +278,7 @@ class _ChatDetailsScreenState extends State<ChatDetailsScreen> {
                           session.userId,
                           participantNameByUserId,
                         ),
-                        style: const TextStyle(color: Colors.white),
+                        style: TextStyle(color: PlayerUiSignalTheme.text),
                       ),
                       subtitle: Text(
                         _verificationStateDisplay(session.state),

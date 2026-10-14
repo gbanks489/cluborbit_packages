@@ -151,7 +151,7 @@ class CommonWidgets {
                   labelText: labelText,
                   labelStyle:
                       labelStyle ??
-                      const TextStyle(
+                      TextStyle(
                         fontFamily: 'Poppins',
                         color: PlayerUiSignalTheme.primaryDarkColor,
                         fontSize: 14,

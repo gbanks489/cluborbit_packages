@@ -66,7 +66,7 @@ class _TimelineEventClusterCard extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(10, 8, 10, 8),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withAlpha(10),
+        color: PlayerUiSignalTheme.text.withAlpha(10),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -74,14 +74,14 @@ class _TimelineEventClusterCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(latestEvent.icon, size: 16, color: Colors.white70),
+              Icon(latestEvent.icon, size: 16, color: PlayerUiSignalTheme.text.withAlpha(179)),
               const SizedBox(width: 6),
               Flexible(
                 child: Text(
                   latestEvent.label,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: PlayerUiSignalTheme.text,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                   ),
@@ -90,7 +90,7 @@ class _TimelineEventClusterCard extends StatelessWidget {
               const SizedBox(width: 6),
               Text(
                 relativeTime(latestEvent.time),
-                style: const TextStyle(color: Colors.white70, fontSize: 11),
+                style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179), fontSize: 11),
               ),
             ],
           ),
@@ -120,13 +120,13 @@ class _TimelineEventClusterCard extends StatelessWidget {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(event.icon, size: 14, color: Colors.white54),
+                            Icon(event.icon, size: 14, color: PlayerUiSignalTheme.text.withAlpha(138)),
                             const SizedBox(width: 6),
                             Flexible(
                               child: Text(
                                 event.label,
-                                style: const TextStyle(
-                                  color: Colors.white70,
+                                style: TextStyle(
+                                  color: PlayerUiSignalTheme.text.withAlpha(179),
                                   fontSize: 11,
                                 ),
                               ),
@@ -134,8 +134,8 @@ class _TimelineEventClusterCard extends StatelessWidget {
                             const SizedBox(width: 6),
                             Text(
                               relativeTime(event.time),
-                              style: const TextStyle(
-                                color: Colors.white54,
+                              style: TextStyle(
+                                color: PlayerUiSignalTheme.text.withAlpha(138),
                                 fontSize: 10,
                               ),
                             ),
@@ -167,7 +167,7 @@ class _ReplySwipeBackground extends StatelessWidget {
       margin: const EdgeInsets.symmetric(vertical: 4),
       alignment: alignment ? Alignment.centerLeft : Alignment.centerRight,
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: const Icon(
+      child: Icon(
         Icons.reply,
         color: PlayerUiSignalTheme.primaryDarkColor,
       ),
@@ -208,7 +208,7 @@ class _SignalReceiptTicks extends StatelessWidget {
       final borderColor = shouldBeFilled ? Colors.white70 : Colors.white38;
       final checkColor = shouldBeFilled
           ? const Color(0xFF0E2E5C)
-          : Colors.white70;
+          : PlayerUiSignalTheme.text.withAlpha(179);
 
       return Container(
         width: 9,
@@ -268,7 +268,7 @@ class _TypingBubble extends StatelessWidget {
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179), fontSize: 12),
                 ),
               ),
               const SizedBox(width: 8),
@@ -322,7 +322,7 @@ class _AnimatedTypingDotsState extends State<_AnimatedTypingDots> {
           height: active ? 6 : 5,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: Colors.white.withAlpha(active ? 230 : 120),
+            color: PlayerUiSignalTheme.text.withAlpha(active ? 230 : 120),
           ),
         );
       }),

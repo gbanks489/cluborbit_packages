@@ -111,7 +111,7 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
         leading: IconButton(
           onPressed: () => Navigator.of(context).maybePop(),
           tooltip: 'Back',
-          icon: SvgPicture.asset(
+          icon: ThemedSvg.asset(
             'assets/icon/ic_back.svg',
             package: 'clubcommon',
             width: 22,
@@ -129,12 +129,12 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
             const SizedBox(height: 8),
             _buildDirectMessageSearchField(),
             const SizedBox(height: 8),
-            const Padding(
+            Padding(
               padding: EdgeInsets.symmetric(horizontal: 4),
               child: Text(
                 'Search by display name',
                 style: TextStyle(
-                  color: Colors.white70,
+                  color: PlayerUiSignalTheme.text.withAlpha(179),
                   fontFamily: 'Poppins',
                   fontSize: 12,
                 ),
@@ -183,8 +183,8 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                               user.displayName.isEmpty
                                   ? '?'
                                   : user.displayName[0].toUpperCase(),
-                              style: const TextStyle(
-                                color: PlayerUiSignalTheme.secondaryColor,
+                              style: TextStyle(
+                                color: PlayerUiSignalTheme.onAccent,
                                 fontWeight: FontWeight.w700,
                               ),
                             )
@@ -214,12 +214,12 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
             const SizedBox(height: 8),
             _buildGroupMembersField(),
             const SizedBox(height: 8),
-            const Padding(
+            Padding(
               padding: EdgeInsets.symmetric(horizontal: 4),
               child: Text(
                 'Search by display name and add members to the group',
                 style: TextStyle(
-                  color: Colors.white70,
+                  color: PlayerUiSignalTheme.text.withAlpha(179),
                   fontFamily: 'Poppins',
                   fontSize: 12,
                 ),
@@ -382,14 +382,14 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
               controller: _membersController,
               focusNode: _membersFocusNode,
               onChanged: _handleGroupMemberInputChanged,
-              cursorColor: Colors.white,
-              style: const TextStyle(
+              cursorColor: PlayerUiSignalTheme.text,
+              style: TextStyle(
                 fontFamily: 'Poppins',
-                color: Colors.white,
+                color: PlayerUiSignalTheme.text,
                 fontSize: 16,
                 fontWeight: FontWeight.w500,
               ),
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 isDense: true,
                 filled: true,
                 fillColor: Colors.transparent,
@@ -399,7 +399,7 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                 disabledBorder: InputBorder.none,
                 hintText: 'Search users',
                 hintStyle: TextStyle(
-                  color: Colors.white70,
+                  color: PlayerUiSignalTheme.text.withAlpha(179),
                   fontFamily: 'Poppins',
                   fontWeight: FontWeight.w500,
                 ),
@@ -416,14 +416,14 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
       child: TextField(
         controller: _dmUserController,
         onChanged: _handleDirectMessageInputChanged,
-        cursorColor: Colors.white,
-        style: const TextStyle(
+        cursorColor: PlayerUiSignalTheme.text,
+        style: TextStyle(
           fontFamily: 'Poppins',
-          color: Colors.white,
+          color: PlayerUiSignalTheme.text,
           fontSize: 16,
           fontWeight: FontWeight.w500,
         ),
-        decoration: const InputDecoration(
+        decoration: InputDecoration(
           isDense: true,
           filled: true,
           fillColor: Colors.transparent,
@@ -433,7 +433,7 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
           disabledBorder: InputBorder.none,
           hintText: 'Search users',
           hintStyle: TextStyle(
-            color: Colors.white70,
+            color: PlayerUiSignalTheme.text.withAlpha(179),
             fontFamily: 'Poppins',
             fontWeight: FontWeight.w500,
           ),
@@ -448,13 +448,13 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white, width: 2),
+        border: Border.all(color: PlayerUiSignalTheme.text, width: 2),
         color: Colors.transparent,
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          const Icon(Icons.search, color: Colors.white70, size: 20),
+          Icon(Icons.search, color: PlayerUiSignalTheme.text.withAlpha(179), size: 20),
           const SizedBox(width: 10),
           Expanded(child: child),
         ],
@@ -495,9 +495,9 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                   width: 62,
                   height: 62,
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: PlayerUiSignalTheme.text,
                     borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: Colors.white.withAlpha(44)),
+                    border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(44)),
                   ),
                   clipBehavior: Clip.antiAlias,
                   child: Padding(
@@ -517,14 +517,14 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                   ),
                 ),
                 const SizedBox(width: 14),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         'Join a club in Club Orbit',
                         style: TextStyle(
-                          color: Colors.white,
+                          color: PlayerUiSignalTheme.text,
                           fontFamily: 'Poppins',
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
@@ -597,22 +597,22 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
         child: user.avatarUrl == null || user.avatarUrl!.trim().isEmpty
             ? Text(
                 initials,
-                style: const TextStyle(
-                  color: PlayerUiSignalTheme.secondaryColor,
+                style: TextStyle(
+                  color: PlayerUiSignalTheme.onAccent,
                   fontWeight: FontWeight.w700,
                 ),
               )
             : null,
       ),
       label: Text(user.displayName),
-      labelStyle: const TextStyle(
-        color: Colors.white,
+      labelStyle: TextStyle(
+        color: PlayerUiSignalTheme.text,
         fontFamily: 'Poppins',
         fontWeight: FontWeight.w500,
       ),
       backgroundColor: PlayerUiSignalTheme.mobileSearchColor.withAlpha(110),
-      side: const BorderSide(color: PlayerUiSignalTheme.primaryDarkColor),
-      deleteIconColor: Colors.white70,
+      side: BorderSide(color: PlayerUiSignalTheme.primaryDarkColor),
+      deleteIconColor: PlayerUiSignalTheme.text.withAlpha(179),
       onDeleted: () {
         setState(() {
           _selectedGroupMembers = _selectedGroupMembers
@@ -641,8 +641,8 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                 user.displayName.isEmpty
                     ? '?'
                     : user.displayName[0].toUpperCase(),
-                style: const TextStyle(
-                  color: PlayerUiSignalTheme.secondaryColor,
+                style: TextStyle(
+                  color: PlayerUiSignalTheme.onAccent,
                   fontWeight: FontWeight.w700,
                 ),
               )
@@ -724,7 +724,7 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                 height: 92,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 3),
+                  border: Border.all(color: PlayerUiSignalTheme.text, width: 3),
                 ),
                 child: CircleAvatar(
                   radius: 42,
@@ -750,7 +750,7 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                   child: Icon(
                     hasAvatar ? Icons.edit : Icons.add,
                     size: 16,
-                    color: PlayerUiSignalTheme.secondaryColor,
+                    color: PlayerUiSignalTheme.onAccent,
                   ),
                 ),
               ),
@@ -899,11 +899,11 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                     Text(
                       user.displayName,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontFamily: 'Poppins',
                         fontSize: 22,
                         fontWeight: FontWeight.w700,
-                        color: Colors.white,
+                        color: PlayerUiSignalTheme.text,
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -923,11 +923,11 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                         const SizedBox(width: 8),
                         Text(
                           statusText,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
-                            color: Colors.white,
+                            color: PlayerUiSignalTheme.text,
                           ),
                         ),
                       ],
@@ -937,10 +937,10 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                       Text(
                         activityText,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 13,
-                          color: Colors.white70,
+                          color: PlayerUiSignalTheme.text.withAlpha(179),
                         ),
                       ),
                     ],
@@ -950,7 +950,7 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                       child: FilledButton(
                         style: FilledButton.styleFrom(
                           backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                          foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                          foregroundColor: PlayerUiSignalTheme.onAccent,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
                         onPressed: _creatingDirectMessage || _creatingGroup
@@ -1000,7 +1000,7 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
               ? Text(
                   initials,
                   style: TextStyle(
-                    color: PlayerUiSignalTheme.secondaryColor,
+                    color: PlayerUiSignalTheme.onAccent,
                     fontWeight: FontWeight.w700,
                     fontSize: size * 0.34,
                   ),

@@ -14,17 +14,17 @@ class CallSettingsScreen extends StatelessWidget {
           backgroundColor: PlayerUiSignalTheme.mobileBackgroundColor,
           appBar: AppBar(
             backgroundColor: PlayerUiSignalTheme.secondaryColor,
-            title: const Text(
+            title: Text(
               'Call settings',
               style: TextStyle(color: PlayerUiSignalTheme.primaryDarkColor),
             ),
-            iconTheme: const IconThemeData(
+            iconTheme: IconThemeData(
               color: PlayerUiSignalTheme.primaryDarkColor,
             ),
             actions: [
               TextButton(
                 onPressed: controller.resetIncomingCallUxSettingsToDefaults,
-                child: const Text(
+                child: Text(
                   'Reset',
                   style: TextStyle(
                     color: PlayerUiSignalTheme.primaryDarkColor,
@@ -38,41 +38,41 @@ class CallSettingsScreen extends StatelessWidget {
             children: [
               const SizedBox(height: 8),
               SwitchListTile.adaptive(
-                title: const Text(
+                title: Text(
                   'Auto-open full-screen incoming call',
-                  style: TextStyle(color: Colors.white),
+                  style: TextStyle(color: PlayerUiSignalTheme.text),
                 ),
-                subtitle: const Text(
+                subtitle: Text(
                   'When disabled, keep only the compact top banner.',
-                  style: TextStyle(color: Colors.white70),
+                  style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                 ),
                 value: settings.autoOpenFullScreen,
                 onChanged: controller.setAutoOpenIncomingFullScreen,
                 activeThumbColor: PlayerUiSignalTheme.primaryDarkColor,
               ),
-              const Divider(height: 1, color: Colors.white24),
+              Divider(height: 1, color: PlayerUiSignalTheme.text.withAlpha(61)),
               SwitchListTile.adaptive(
-                title: const Text(
+                title: Text(
                   'Incoming ringtone',
-                  style: TextStyle(color: Colors.white),
+                  style: TextStyle(color: PlayerUiSignalTheme.text),
                 ),
-                subtitle: const Text(
+                subtitle: Text(
                   'Play alert sound while the call is ringing.',
-                  style: TextStyle(color: Colors.white70),
+                  style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                 ),
                 value: settings.ringtoneEnabled,
                 onChanged: controller.setIncomingRingtoneEnabled,
                 activeThumbColor: PlayerUiSignalTheme.primaryDarkColor,
               ),
-              const Divider(height: 1, color: Colors.white24),
+              Divider(height: 1, color: PlayerUiSignalTheme.text.withAlpha(61)),
               SwitchListTile.adaptive(
-                title: const Text(
+                title: Text(
                   'Incoming vibration',
-                  style: TextStyle(color: Colors.white),
+                  style: TextStyle(color: PlayerUiSignalTheme.text),
                 ),
-                subtitle: const Text(
+                subtitle: Text(
                   'Trigger haptic feedback for incoming calls.',
-                  style: TextStyle(color: Colors.white70),
+                  style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
                 ),
                 value: settings.vibrationEnabled,
                 onChanged: controller.setIncomingVibrationEnabled,

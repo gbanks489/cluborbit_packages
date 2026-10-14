@@ -128,7 +128,7 @@ class _AvatarThumbState extends State<_AvatarThumb> {
                 widget.initials,
                 style: TextStyle(
                   fontSize: widget.size * 0.36,
-                  color: Colors.white,
+                  color: PlayerUiSignalTheme.text,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -167,7 +167,7 @@ class _AvatarThumbState extends State<_AvatarThumb> {
         widget.initials,
         style: TextStyle(
           fontSize: widget.size * 0.36,
-          color: Colors.white,
+          color: PlayerUiSignalTheme.text,
           fontWeight: FontWeight.w600,
         ),
       ),

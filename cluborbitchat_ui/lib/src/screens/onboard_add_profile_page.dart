@@ -90,7 +90,7 @@ class _OnboardAddProfilePageState extends State<OnboardAddProfilePage> {
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                 fontFamily: 'Poppins',
                 fontWeight: FontWeight.w700,
-                color: Colors.white,
+                color: PlayerUiSignalTheme.text,
               ),
             ),
             const SizedBox(height: 8),
@@ -99,16 +99,16 @@ class _OnboardAddProfilePageState extends State<OnboardAddProfilePage> {
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 fontFamily: 'Poppins',
-                color: Colors.white70,
+                color: PlayerUiSignalTheme.text.withAlpha(179),
               ),
             ),
             const SizedBox(height: 24),
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: Colors.white.withAlpha(10),
+                color: PlayerUiSignalTheme.text.withAlpha(10),
                 borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: Colors.white.withAlpha(24)),
+                border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(24)),
               ),
               child: Form(
                 key: _formKey,
@@ -120,7 +120,7 @@ class _OnboardAddProfilePageState extends State<OnboardAddProfilePage> {
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontFamily: 'Poppins',
                         fontWeight: FontWeight.w600,
-                        color: Colors.white,
+                        color: PlayerUiSignalTheme.text,
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -233,7 +233,7 @@ class _OnboardAddProfilePageState extends State<OnboardAddProfilePage> {
                       child: FilledButton(
                         style: FilledButton.styleFrom(
                           backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                          foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                          foregroundColor: PlayerUiSignalTheme.onAccent,
                           padding: const EdgeInsets.symmetric(vertical: 15),
                         ),
                         onPressed: controller.loading ? null : _finish,
@@ -292,12 +292,12 @@ class _GenderCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: selected
               ? PlayerUiSignalTheme.primaryDarkColor.withAlpha(36)
-              : Colors.white.withAlpha(6),
+              : PlayerUiSignalTheme.text.withAlpha(6),
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
             color: selected
                 ? PlayerUiSignalTheme.primaryDarkColor
-                : Colors.white.withAlpha(18),
+                : PlayerUiSignalTheme.text.withAlpha(18),
           ),
         ),
         child: Column(
@@ -315,8 +315,8 @@ class _GenderCard extends StatelessWidget {
             const SizedBox(height: 10),
             Text(
               label,
-              style: const TextStyle(
-                color: Colors.white,
+              style: TextStyle(
+                color: PlayerUiSignalTheme.text,
                 fontFamily: 'Poppins',
                 fontWeight: FontWeight.w600,
               ),

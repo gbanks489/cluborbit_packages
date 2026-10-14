@@ -215,19 +215,19 @@ class _PlayerUiLoginPageState extends State<PlayerUiLoginPage> {
                   width: double.infinity,
                   alignment: Alignment.center,
                   padding: const EdgeInsets.symmetric(vertical: 15),
-                  decoration: const ShapeDecoration(
+                  decoration: ShapeDecoration(
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.all(Radius.circular(10)),
                     ),
                     color: PlayerUiSignalTheme.primaryDarkColor,
                   ),
                   child: _isLoading
-                      ? const SizedBox(
+                      ? SizedBox(
                           width: 18,
                           height: 18,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: PlayerUiSignalTheme.secondaryColor,
+                            color: PlayerUiSignalTheme.onAccent,
                           ),
                         )
                       : const Text(
@@ -433,7 +433,7 @@ class _PlayerUiLoginPageState extends State<PlayerUiLoginPage> {
               FilledButton(
                 style: FilledButton.styleFrom(
                   backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                  foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                  foregroundColor: PlayerUiSignalTheme.onAccent,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
                 onPressed: widget.loading
@@ -671,7 +671,7 @@ class _PlayerUiSignupPageState extends State<PlayerUiSignupPage> {
               _requiredField(
                 _firstNameController,
                 'First Name',
-                prefix: const PlayerUiSvgPrefix(
+                prefix: PlayerUiSvgPrefix(
                   assetName: 'packages/clubcommon/assets/icon/ic_fullname.svg',
                   color: PlayerUiSignalTheme.primaryDarkColor,
                 ),
@@ -680,7 +680,7 @@ class _PlayerUiSignupPageState extends State<PlayerUiSignupPage> {
               _requiredField(
                 _lastNameController,
                 'Last Name',
-                prefix: const PlayerUiSvgPrefix(
+                prefix: PlayerUiSvgPrefix(
                   assetName: 'packages/clubcommon/assets/icon/ic_fullname.svg',
                   color: PlayerUiSignalTheme.primaryDarkColor,
                 ),
@@ -689,7 +689,7 @@ class _PlayerUiSignupPageState extends State<PlayerUiSignupPage> {
               _requiredField(
                 _displayNameController,
                 'Display Name',
-                prefix: const PlayerUiSvgPrefix(
+                prefix: PlayerUiSvgPrefix(
                   assetName: 'packages/clubcommon/assets/icon/ic_fullname.svg',
                   color: PlayerUiSignalTheme.primaryDarkColor,
                 ),
@@ -699,7 +699,7 @@ class _PlayerUiSignupPageState extends State<PlayerUiSignupPage> {
                 _emailController,
                 'Email',
                 keyboardType: TextInputType.emailAddress,
-                prefix: const PlayerUiSvgPrefix(
+                prefix: PlayerUiSvgPrefix(
                   assetName: 'packages/clubcommon/assets/icon/ic_email.svg',
                   color: PlayerUiSignalTheme.primaryDarkColor,
                 ),
@@ -707,7 +707,7 @@ class _PlayerUiSignupPageState extends State<PlayerUiSignupPage> {
               const SizedBox(height: 10),
               PlayerUiSelectorField(
                 label: 'Gender',
-                prefix: const PlayerUiSvgPrefix(
+                prefix: PlayerUiSvgPrefix(
                   assetName: 'packages/clubcommon/assets/icon/ic_gender.svg',
                   color: PlayerUiSignalTheme.primaryDarkColor,
                 ),
@@ -795,7 +795,7 @@ class _PlayerUiSignupPageState extends State<PlayerUiSignupPage> {
               FilledButton(
                 style: FilledButton.styleFrom(
                   backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                  foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                  foregroundColor: PlayerUiSignalTheme.onAccent,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
                 onPressed: widget.loading ? null : _submit,
@@ -824,7 +824,7 @@ class _PlayerUiSignupPageState extends State<PlayerUiSignupPage> {
                   const SizedBox(width: 4),
                   TextButton(
                     onPressed: widget.loading ? null : widget.onBackToLogin,
-                    child: const Text(
+                    child: Text(
                       'Login',
                       style: TextStyle(
                         color: PlayerUiSignalTheme.primaryDarkColor,

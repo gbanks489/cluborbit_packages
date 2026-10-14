@@ -79,7 +79,7 @@ class _SignupScreenState extends State<SignupScreen> {
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                 fontFamily: 'Poppins',
                 fontWeight: FontWeight.w700,
-                color: Colors.white,
+                color: PlayerUiSignalTheme.text,
               ),
             ),
             const SizedBox(height: 8),
@@ -88,16 +88,16 @@ class _SignupScreenState extends State<SignupScreen> {
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 fontFamily: 'Poppins',
-                color: Colors.white70,
+                color: PlayerUiSignalTheme.text.withAlpha(179),
               ),
             ),
             const SizedBox(height: 24),
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: Colors.white.withAlpha(10),
+                color: PlayerUiSignalTheme.text.withAlpha(10),
                 borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: Colors.white.withAlpha(24)),
+                border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(24)),
               ),
               child: Form(
                 key: _formKey,
@@ -181,7 +181,7 @@ class _SignupScreenState extends State<SignupScreen> {
                       child: FilledButton(
                         style: FilledButton.styleFrom(
                           backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                          foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                          foregroundColor: PlayerUiSignalTheme.onAccent,
                           padding: const EdgeInsets.symmetric(vertical: 15),
                         ),
                         onPressed: controller.loading ? null : _submit,
@@ -213,13 +213,13 @@ class _SignupScreenState extends State<SignupScreen> {
                 Text(
                   'Already have an account?',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Colors.white70,
+                    color: PlayerUiSignalTheme.text.withAlpha(179),
                     fontFamily: 'Poppins',
                   ),
                 ),
                 TextButton(
                   onPressed: controller.loading ? null : context.pop,
-                  child: const Text(
+                  child: Text(
                     'Login',
                     style: TextStyle(
                       color: PlayerUiSignalTheme.primaryDarkColor,

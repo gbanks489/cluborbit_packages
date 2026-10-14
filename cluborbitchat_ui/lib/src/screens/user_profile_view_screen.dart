@@ -42,7 +42,7 @@ class _UserProfileViewScreenState extends State<UserProfileViewScreen> {
             leading: IconButton(
               onPressed: () => Navigator.of(context).maybePop(),
               tooltip: 'Back',
-              icon: SvgPicture.asset(
+              icon: ThemedSvg.asset(
                 'assets/icon/ic_back.svg',
                 package: 'clubcommon',
                 width: 22,
@@ -61,7 +61,7 @@ class _UserProfileViewScreenState extends State<UserProfileViewScreen> {
           ),
           floatingActionButton: FloatingActionButton(
             backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-            foregroundColor: PlayerUiSignalTheme.secondaryColor,
+            foregroundColor: PlayerUiSignalTheme.onAccent,
             onPressed: profile == null
                 ? null
                 : () async {
@@ -94,11 +94,11 @@ class _UserProfileViewScreenState extends State<UserProfileViewScreen> {
                       Center(
                         child: Text(
                           _displayName(profile),
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontFamily: 'Poppins',
                             fontSize: 22,
                             fontWeight: FontWeight.bold,
-                            color: Colors.white,
+                            color: PlayerUiSignalTheme.text,
                           ),
                         ),
                       ),

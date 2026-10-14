@@ -534,7 +534,7 @@ class _ImageBatchComposerSheetState extends State<_ImageBatchComposerSheet> {
     return SafeArea(
       top: false,
       child: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           color: PlayerUiSignalTheme.secondaryColor,
           borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
         ),

@@ -72,7 +72,7 @@ class _ClubEmojiPickerState extends State<ClubEmojiPicker> {
                 size: 18,
                 color: selected
                     ? PlayerUiSignalTheme.primaryDarkColor
-                    : Colors.white60,
+                    : PlayerUiSignalTheme.text.withAlpha(153),
               ),
               const SizedBox(width: 6),
               Text(
@@ -83,7 +83,7 @@ class _ClubEmojiPickerState extends State<ClubEmojiPicker> {
                   fontWeight: FontWeight.w600,
                   color: selected
                       ? PlayerUiSignalTheme.primaryDarkColor
-                      : Colors.white60,
+                      : PlayerUiSignalTheme.text.withAlpha(153),
                 ),
               ),
             ],

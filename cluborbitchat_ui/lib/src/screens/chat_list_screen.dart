@@ -670,7 +670,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                         thread.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
@@ -764,7 +764,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               ? null
               : FloatingActionButton(
                   backgroundColor: PlayerUiSignalTheme.primaryDarkColor,
-                  foregroundColor: PlayerUiSignalTheme.secondaryColor,
+                  foregroundColor: PlayerUiSignalTheme.onAccent,
                   onPressed: () {
                     context.pushNamed(PlayerChatRoutes.createChat);
                   },
@@ -807,7 +807,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(14),
                                 ),
-                                color: PlayerUiSignalTheme.secondaryColor,
+                                color: PlayerUiSignalTheme.surface,
                                 onSelected: (value) async {
                                   if (value == 'profile') {
                                     final profileUid = controller
@@ -846,7 +846,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                   }
                                 },
                                 itemBuilder: (_) => [
-                                  const PopupMenuItem<String>(
+                                  PopupMenuItem<String>(
                                     value: 'profile',
                                     child: Row(
                                       children: [
@@ -862,7 +862,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                     ),
                                   ),
                                   if (kDebugMode)
-                                    const PopupMenuItem<String>(
+                                    PopupMenuItem<String>(
                                       value: 'call_settings',
                                       child: Row(
                                         children: [
@@ -877,7 +877,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                         ],
                                       ),
                                     ),
-                                  const PopupMenuItem<String>(
+                                  PopupMenuItem<String>(
                                     value: 'logout',
                                     child: Row(
                                       children: [
@@ -942,7 +942,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                               Expanded(
                                 child: Text(
                                   'Select chats to share ${_pendingShareFiles.length} item${_pendingShareFiles.length == 1 ? '' : 's'}.',
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontFamily: 'Poppins',
                                     fontSize: 13,
                                     fontWeight: FontWeight.w600,
@@ -976,7 +976,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                               backgroundColor:
                                   PlayerUiSignalTheme.primaryDarkColor,
                               foregroundColor:
-                                  PlayerUiSignalTheme.secondaryColor,
+                                  PlayerUiSignalTheme.onAccent,
                               disabledBackgroundColor: PlayerUiSignalTheme
                                   .primaryDarkColor
                                   .withAlpha(60),
@@ -1082,8 +1082,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     .where((t) => _matchesFilter(t, filter, resolver))
                     .fold<int>(0, (sum, t) => sum + t.unreadCount);
           final foreground = selected
-              ? PlayerUiSignalTheme.secondaryColor
-              : PlayerUiSignalTheme.primaryDarkColor;
+              ? PlayerUiSignalTheme.onAccent
+              : PlayerUiSignalTheme.isDark
+              ? PlayerUiSignalTheme.primaryDarkColor
+              : PlayerUiSignalTheme.text;
           return Material(
             color: selected
                 ? PlayerUiSignalTheme.primaryDarkColor
@@ -1133,7 +1135,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                             fontWeight: FontWeight.w700,
                             color: selected
                                 ? PlayerUiSignalTheme.primaryDarkColor
-                                : PlayerUiSignalTheme.secondaryColor,
+                                : PlayerUiSignalTheme.onAccent,
                           ),
                         ),
                       ),
@@ -1167,7 +1169,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               child: Text(
                 'No ${_filter.label.toLowerCase()} chats',
                 textAlign: TextAlign.center,
-                style: const TextStyle(
+                style: TextStyle(
                   fontFamily: 'Poppins',
                   fontSize: 14,
                   color: PlayerUiSignalTheme.primaryDarkColor,
@@ -1187,7 +1189,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
     return ListView(
       children: [
-        const Padding(
+        Padding(
           padding: EdgeInsets.fromLTRB(4, 0, 4, 8),
           child: Text(
             'Chats',
@@ -1204,7 +1206,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
         else
           ...threads.map((t) => _buildThreadTile(context, controller, t)),
         const Divider(height: 24),
-        const Padding(
+        Padding(
           padding: EdgeInsets.fromLTRB(4, 0, 4, 8),
           child: Text(
             'Users',
@@ -1307,7 +1309,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
             ),
           ),
           if (isPinned)
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(left: 6),
               child: Icon(
                 Icons.push_pin,
@@ -1322,7 +1324,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               typingText,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 color: PlayerUiSignalTheme.primaryDarkColor,
                 fontStyle: FontStyle.italic,
               ),
@@ -1331,7 +1333,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               subtitleText,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white70),
+              style: TextStyle(color: PlayerUiSignalTheme.text.withAlpha(179)),
             ),
       trailing: shareMode
           ? Icon(
@@ -1340,7 +1342,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   : Icons.radio_button_unchecked_rounded,
               color: selectedForShare
                   ? PlayerUiSignalTheme.primaryDarkColor
-                  : Colors.white38,
+                  : PlayerUiSignalTheme.text.withAlpha(97),
               size: 26,
             )
           : Column(
@@ -1352,19 +1354,19 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (isMuted)
-                      const Padding(
+                      Padding(
                         padding: EdgeInsets.only(right: 4),
                         child: Icon(
                           Icons.notifications_off_outlined,
                           size: 14,
-                          color: Colors.white54,
+                          color: PlayerUiSignalTheme.text.withAlpha(138),
                         ),
                       ),
                     Text(
                       _formatTimeAgo(thread.updatedAt),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
-                        color: Colors.white54,
+                        color: PlayerUiSignalTheme.text.withAlpha(138),
                       ),
                     ),
                   ],
@@ -1388,9 +1390,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
                         backgroundColor: PlayerUiSignalTheme.primaryColor,
                         child: Text(
                           thread.unreadCount.toString(),
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 10,
-                            color: Colors.white,
+                            color: PlayerUiSignalTheme.text,
                           ),
                         ),
                       ),
@@ -1519,9 +1521,9 @@ class _ChatListSyncOverlay extends StatelessWidget {
               const SizedBox(height: 16),
               DecoratedBox(
                 decoration: BoxDecoration(
-                  color: Colors.white.withAlpha(18),
+                  color: PlayerUiSignalTheme.text.withAlpha(18),
                   borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.white.withAlpha(22)),
+                  border: Border.all(color: PlayerUiSignalTheme.text.withAlpha(22)),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -1530,20 +1532,20 @@ class _ChatListSyncOverlay extends StatelessWidget {
                     children: [
                       Row(
                         children: [
-                          const Expanded(
+                          Expanded(
                             child: Text(
                               'Syncing chats',
                               style: TextStyle(
                                 fontFamily: 'Poppins',
                                 fontSize: 18,
                                 fontWeight: FontWeight.w700,
-                                color: Colors.white,
+                                color: PlayerUiSignalTheme.text,
                               ),
                             ),
                           ),
                           Text(
                             '$progressPercent%',
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontFamily: 'Poppins',
                               fontSize: 18,
                               fontWeight: FontWeight.w700,
@@ -1555,11 +1557,11 @@ class _ChatListSyncOverlay extends StatelessWidget {
                       const SizedBox(height: 8),
                       Text(
                         status,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontFamily: 'Poppins',
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
-                          color: Colors.white70,
+                          color: PlayerUiSignalTheme.text.withAlpha(179),
                         ),
                       ),
                       const SizedBox(height: 14),
@@ -1568,8 +1570,8 @@ class _ChatListSyncOverlay extends StatelessWidget {
                         child: LinearProgressIndicator(
                           value: progressValue,
                           minHeight: 8,
-                          backgroundColor: Colors.white.withAlpha(18),
-                          valueColor: const AlwaysStoppedAnimation<Color>(
+                          backgroundColor: PlayerUiSignalTheme.text.withAlpha(18),
+                          valueColor: AlwaysStoppedAnimation<Color>(
                             PlayerUiSignalTheme.primaryDarkColor,
                           ),
                         ),
@@ -1588,7 +1590,7 @@ class _ChatListSyncOverlay extends StatelessWidget {
                     child: Container(
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        color: Colors.white.withAlpha(14),
+                        color: PlayerUiSignalTheme.text.withAlpha(14),
                         borderRadius: BorderRadius.circular(18),
                       ),
                       child: Row(
@@ -1597,7 +1599,7 @@ class _ChatListSyncOverlay extends StatelessWidget {
                             width: 48,
                             height: 48,
                             decoration: BoxDecoration(
-                              color: Colors.white.withAlpha(24),
+                              color: PlayerUiSignalTheme.text.withAlpha(24),
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -1610,7 +1612,7 @@ class _ChatListSyncOverlay extends StatelessWidget {
                                   width: 130 + (index % 3) * 28,
                                   height: 14,
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withAlpha(24),
+                                    color: PlayerUiSignalTheme.text.withAlpha(24),
                                     borderRadius: BorderRadius.circular(999),
                                   ),
                                 ),
@@ -1619,7 +1621,7 @@ class _ChatListSyncOverlay extends StatelessWidget {
                                   width: double.infinity,
                                   height: 10,
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withAlpha(16),
+                                    color: PlayerUiSignalTheme.text.withAlpha(16),
                                     borderRadius: BorderRadius.circular(999),
                                   ),
                                 ),
@@ -1628,7 +1630,7 @@ class _ChatListSyncOverlay extends StatelessWidget {
                                   width: 150 + (index % 2) * 56,
                                   height: 10,
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withAlpha(12),
+                                    color: PlayerUiSignalTheme.text.withAlpha(12),
                                     borderRadius: BorderRadius.circular(999),
                                   ),
                                 ),
@@ -1693,11 +1695,11 @@ class _ShimmerFrameState extends State<_ShimmerFrame>
               begin: Alignment(-1 + sweep, -0.3),
               end: Alignment(sweep, 0.3),
               colors: [
-                Colors.white.withAlpha(0),
-                Colors.white.withAlpha(24),
-                Colors.white.withAlpha(72),
-                Colors.white.withAlpha(24),
-                Colors.white.withAlpha(0),
+                PlayerUiSignalTheme.text.withAlpha(0),
+                PlayerUiSignalTheme.text.withAlpha(24),
+                PlayerUiSignalTheme.text.withAlpha(72),
+                PlayerUiSignalTheme.text.withAlpha(24),
+                PlayerUiSignalTheme.text.withAlpha(0),
               ],
               stops: const [0, 0.35, 0.5, 0.65, 1],
             ).createShader(bounds);
@@ -1862,7 +1864,7 @@ class _AvatarThumbState extends State<_AvatarThumb> {
         child: Text(
           widget.initials,
           style: TextStyle(
-            color: Colors.white,
+            color: PlayerUiSignalTheme.text,
             fontWeight: FontWeight.w700,
             fontSize: math.max(14, widget.size * 0.4),
           ),
@@ -2017,8 +2019,8 @@ class _ShareUploadDialog extends StatelessWidget {
                   : item.done
                   ? _formatBytes(item.totalBytes)
                   : '${_formatBytes(item.sentBytes)}/${_formatBytes(item.totalBytes)}',
-              style: const TextStyle(
-                color: Colors.white,
+              style: TextStyle(
+                color: PlayerUiSignalTheme.text,
                 fontSize: 9,
                 fontWeight: FontWeight.w700,
               ),
