@@ -87,11 +87,15 @@ class _AccentColorMapper extends ColorMapper {
     Color color,
   ) {
     final opaque = color.withAlpha(255).toARGB32();
-    if (whiteAs != null && opaque == 0xFFFFFFFF) {
+    // White (and the light grey some icons use for white) - e.g. the profile icons' discs.
+    if (whiteAs != null && (opaque == 0xFFFFFFFF || opaque == 0xFFEBEBEB)) {
       // Keeps the replacement's own transparency (e.g. a fully transparent whiteAs).
       return whiteAs!.withValues(alpha: whiteAs!.a * color.a);
     }
-    if (opaque == 0xFF000000) return onAccent.withValues(alpha: onAccent.a * color.a);
+    // Black or navy in the icons is the glyph/badge drawn on the yellow (e.g. ic_next's circle).
+    if (opaque == 0xFF000000 || opaque == 0xFF0C1C36) {
+      return onAccent.withValues(alpha: onAccent.a * color.a);
+    }
     if (!_yellows.contains(opaque)) return color;
     return accent.withValues(alpha: color.a);
   }
