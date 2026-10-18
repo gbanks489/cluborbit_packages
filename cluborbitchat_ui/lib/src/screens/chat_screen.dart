@@ -7,7 +7,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -22,6 +22,7 @@ import 'package:cluborbit_models/cluborbit_models.dart';
 import 'package:provider/provider.dart';
 import 'package:record/record.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:video_player/video_player.dart';
 
 import '../widgets/animated_emoji.dart';
@@ -1570,7 +1571,21 @@ class _ChatScreenState extends State<ChatScreen> {
         final path =
             '${dir.path}/co_doc_${DateTime.now().microsecondsSinceEpoch}_$filename';
         await File(path).writeAsBytes(bytes, flush: true);
-        uri = Uri.file(path);
+        // A local file goes through OpenFilex (a content:// share): Android 7+ refuses to hand
+        // another app a file:// link, which made url_launcher fail here.
+        final result = await OpenFilex.open(path, type: message.metadata['mimeType']?.toString());
+        if (result.type != ResultType.done && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                result.type == ResultType.noAppToOpen
+                    ? 'No app available to open this file.'
+                    : 'Could not open the document.',
+              ),
+            ),
+          );
+        }
+        return;
       } catch (_) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(

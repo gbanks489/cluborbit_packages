@@ -99,6 +99,8 @@ class ChatController extends ChangeNotifier {
       ChatThreadPreferencesStore();
 
   StreamSubscription<void>? _syncSubscription;
+  StreamSubscription<void>? _sessionInvalidSubscription;
+  Future<bool>? _sessionRecovery;
   bool _isDisposed = false;
 
   bool _loading = false;
@@ -119,6 +121,8 @@ class ChatController extends ChangeNotifier {
   List<ChatParticipant> _searchedUsers = const <ChatParticipant>[];
   List<ChatMessage> _messages = const <ChatMessage>[];
   List<ChatParticipant> _participants = const <ChatParticipant>[];
+  List<ChatRoomFile> _roomFiles = const <ChatRoomFile>[];
+  bool _roomFilesBusy = false;
   List<ChatParticipant> _typingUsers = const <ChatParticipant>[];
   List<VerificationSession> _verificationSessions =
       const <VerificationSession>[];
@@ -299,6 +303,78 @@ class ChatController extends ChangeNotifier {
 
   List<ChatMessage> get messages => _messages;
   List<ChatParticipant> get participants => _participants;
+
+  /// Files admins posted to the active chat's details (newest first).
+  List<ChatRoomFile> get roomFiles => _roomFiles;
+
+  /// True while a file is being added to / removed from the active chat's details.
+  bool get roomFilesBusy => _roomFilesBusy;
+
+  /// Whether the signed-in user is an admin (or owner) of the active chat - who may post files
+  /// to its details.
+  bool get isActiveRoomAdmin {
+    final me = matrixUserId;
+    return _participants.any(
+      (p) =>
+          p.userId == me &&
+          (p.level == ChatMemberLevel.admin || p.level == ChatMemberLevel.owner),
+    );
+  }
+
+  /// Picks a file and posts it to the active chat's details (admins only). True once posted.
+  Future<bool> pickAndAddRoomFile() async {
+    final roomId = _activeRoomId;
+    if (roomId == null || _roomFilesBusy) return false;
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      allowMultiple: false,
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return false;
+    final file = result.files.first;
+    final bytes = file.bytes;
+    if (bytes == null || bytes.isEmpty) {
+      _reportError('Selected file has no readable bytes.');
+      return false;
+    }
+    if (!_validateUploadSize(bytes.lengthInBytes, file.name)) return false;
+
+    _roomFilesBusy = true;
+    notifyListeners();
+    try {
+      await _matrixService.addRoomFile(
+        roomId: roomId,
+        bytes: bytes,
+        filename: file.name,
+        mimeType: _mimeTypeFromFileName(file.name),
+      );
+      _roomFiles = await _matrixService.getRoomFiles(roomId);
+      return true;
+    } catch (e) {
+      _reportError('Could not post the file: $e');
+      return false;
+    } finally {
+      _roomFilesBusy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Removes a file from the active chat's details (admins only).
+  Future<void> removeRoomFile(String fileId) async {
+    final roomId = _activeRoomId;
+    if (roomId == null || _roomFilesBusy) return;
+    _roomFilesBusy = true;
+    notifyListeners();
+    try {
+      await _matrixService.removeRoomFile(roomId: roomId, fileId: fileId);
+      _roomFiles = await _matrixService.getRoomFiles(roomId);
+    } catch (e) {
+      _reportError('Could not remove the file: $e');
+    } finally {
+      _roomFilesBusy = false;
+      notifyListeners();
+    }
+  }
   List<ChatParticipant> get typingUsers => _typingUsers;
   List<String> typingNamesInRoom(String roomId) =>
       _matrixService.typingNamesInRoom(roomId);
@@ -479,7 +555,7 @@ class ChatController extends ChangeNotifier {
       _userProfile = await _userProfileService.fetchCurrentUserProfile();
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       notifyListeners();
@@ -500,7 +576,7 @@ class ChatController extends ChangeNotifier {
       );
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -573,7 +649,7 @@ class ChatController extends ChangeNotifier {
       );
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -586,7 +662,7 @@ class ChatController extends ChangeNotifier {
       await _authService.googleLogin();
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -602,7 +678,7 @@ class ChatController extends ChangeNotifier {
       await _authService.registerWithPassword(email: email, password: password);
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -636,7 +712,7 @@ class ChatController extends ChangeNotifier {
       await connectMatrixUsingProfile();
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -656,7 +732,7 @@ class ChatController extends ChangeNotifier {
       await connectMatrixUsingProfile();
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -670,7 +746,7 @@ class ChatController extends ChangeNotifier {
       await connectMatrixUsingProfile();
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -718,8 +794,15 @@ class ChatController extends ChangeNotifier {
       _errorNotifier.clear();
     } catch (e) {
       failureMessage = _describeError(e);
-      _errorNotifier.setError(failureMessage);
+      // Right after launch - typically opening a chat notification - the first attempt can fail
+      // only because sign-in, the Firebase token or the network isn't ready yet, and the quick
+      // retry then succeeds. So the error is shown only once a retry has failed too.
+      final isFirstFailure = _backgroundConnectFailures == 0;
+      if (!isFirstFailure) {
+        _reportError(failureMessage);
+      }
       _scheduleBackgroundConnectRetry(firebaseUserId);
+      if (isFirstFailure) failureMessage = 'Reconnecting to chat...';
     } finally {
       _setMatrixConnecting(
         false,
@@ -731,10 +814,11 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  /// Lets a failed background connect be tried again: 5s, 15s, 30s, then every 60s.
+  /// Lets a failed background connect be tried again: 2s, 5s, 15s, 30s, then every 60s.
   void _scheduleBackgroundConnectRetry(String firebaseUserId) {
     if (_isDisposed) return;
     const delays = <Duration>[
+      Duration(seconds: 2),
       Duration(seconds: 5),
       Duration(seconds: 15),
       Duration(seconds: 30),
@@ -782,7 +866,7 @@ class ChatController extends ChangeNotifier {
       _errorNotifier.clear();
       return true;
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       return false;
     } finally {
       _setLoading(false);
@@ -866,7 +950,7 @@ class ChatController extends ChangeNotifier {
       _userProfile = null;
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -882,7 +966,7 @@ class ChatController extends ChangeNotifier {
       _errorNotifier.clear();
       return profile == null;
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -926,7 +1010,7 @@ class ChatController extends ChangeNotifier {
       );
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -955,7 +1039,7 @@ class ChatController extends ChangeNotifier {
       await _connectMatrixInternal(username: username, password: password);
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -976,7 +1060,7 @@ class ChatController extends ChangeNotifier {
       );
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -991,7 +1075,7 @@ class ChatController extends ChangeNotifier {
       _threads = await _matrixService.getJoinedThreads(onProgress: onProgress);
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -1004,6 +1088,7 @@ class ChatController extends ChangeNotifier {
     _activeRoomTitle = roomTitle;
     _messages = const <ChatMessage>[];
     _participants = const <ChatParticipant>[];
+    _roomFiles = const <ChatRoomFile>[];
     _typingUsers = const <ChatParticipant>[];
     _verificationSessions = const <VerificationSession>[];
     _activeRoomEncryptionStatus = const ChatEncryptionStatus.unencrypted();
@@ -1048,6 +1133,31 @@ class ChatController extends ChangeNotifier {
       await _resyncRoomIfIncomplete(roomId);
       return;
     } catch (error) {
+      // Opened before the chat finished signing in (e.g. straight from a notification on a cold
+      // start): the request had no valid session yet. Wait for the connection, then try again,
+      // instead of giving up on the room.
+      final tokenRejected = MatrixRestService.isInvalidTokenError(error);
+      if (tokenRejected || matrixUserId.isEmpty) {
+        final ready = tokenRejected && matrixUserId.isNotEmpty
+            ? await _recoverMatrixSession()
+            : await _waitForMatrixConnection();
+        if (ready) {
+          try {
+            await openRoom(roomId, roomTitle: roomTitle);
+            await _resyncRoomIfIncomplete(roomId);
+            return;
+          } catch (retryError) {
+            if (!_isMembershipError(retryError) &&
+                !_isTransientNetworkError(retryError)) {
+              _reportError(retryError.toString());
+            }
+            return;
+          }
+        }
+        // Still not connected: the background connect reports its own failure.
+        return;
+      }
+
       // Membership timing errors (M_FORBIDDEN) during invite→join transitions
       // are expected and should not be shown to the user.
       if (_isMembershipError(error)) {
@@ -1057,7 +1167,7 @@ class ChatController extends ChangeNotifier {
       final shouldRetry =
           _isTransientNetworkError(error) || _isLikelyTimeoutError(error);
       if (!shouldRetry) {
-        _errorNotifier.setError(error.toString());
+        _reportError(error.toString());
         return;
       }
     }
@@ -1076,7 +1186,7 @@ class ChatController extends ChangeNotifier {
       await _resyncRoomIfIncomplete(roomId);
     } catch (retryError) {
       if (!_isMembershipError(retryError)) {
-        _errorNotifier.setError(retryError.toString());
+        _reportError(retryError.toString());
       }
     }
   }
@@ -1182,6 +1292,12 @@ class ChatController extends ChangeNotifier {
     return _matrixService.joinRoomIfInvited(roomId);
   }
 
+  /// Shares this device's room key with every member of an encrypted room before the chat opens
+  /// (see MatrixRestService.prepareRoomEncryption). Returns false when there was nothing to do.
+  Future<bool> prepareRoomEncryption(String roomId) {
+    return _matrixService.prepareRoomEncryption(roomId);
+  }
+
   Future<String> resolveRoomForNavigation(String roomIdOrAlias) async {
     final normalized = Uri.decodeComponent(roomIdOrAlias).trim();
     if (normalized.isEmpty) {
@@ -1224,7 +1340,7 @@ class ChatController extends ChangeNotifier {
       return count;
     } catch (e) {
       if (!_isTransientNetworkError(e)) {
-        _errorNotifier.setError(e.toString());
+        _reportError(e.toString());
       }
       return 0;
     }
@@ -1241,8 +1357,15 @@ class ChatController extends ChangeNotifier {
       debugPrint(
         '[ChatController.refreshChatDetails] participants error=$error',
       );
-      _errorNotifier.setError(error.toString());
+      _reportError(error.toString());
       _participants = const <ChatParticipant>[];
+    }
+
+    try {
+      _roomFiles = await _matrixService.getRoomFiles(roomId);
+    } catch (error) {
+      debugPrint('[ChatController.refreshChatDetails] files error=$error');
+      _roomFiles = const <ChatRoomFile>[];
     }
 
     try {
@@ -1250,7 +1373,7 @@ class ChatController extends ChangeNotifier {
           .getRoomEncryptionStatus(roomId);
     } catch (error) {
       debugPrint('[ChatController.refreshChatDetails] encryption error=$error');
-      _errorNotifier.setError(error.toString());
+      _reportError(error.toString());
       _activeRoomEncryptionStatus = const ChatEncryptionStatus.unencrypted();
     }
 
@@ -1290,7 +1413,7 @@ class ChatController extends ChangeNotifier {
   Future<void> sendText(String text) async {
     final roomId = _activeRoomId;
     if (roomId == null) {
-      _errorNotifier.setError('No active chat room — please re-open the chat.');
+      _reportError('No active chat room — please re-open the chat.');
       return;
     }
     if (text.trim().isEmpty) {
@@ -1329,7 +1452,7 @@ class ChatController extends ChangeNotifier {
   }) async {
     final roomId = _activeRoomId;
     if (roomId == null) {
-      _errorNotifier.setError('No active chat room — please re-open the chat.');
+      _reportError('No active chat room — please re-open the chat.');
       return false;
     }
     try {
@@ -1343,7 +1466,7 @@ class ChatController extends ChangeNotifier {
       return true;
     } catch (e, s) {
       debugPrint('[ChatController] sendLocation failed: $e\n$s');
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       return false;
     }
   }
@@ -1358,7 +1481,7 @@ class ChatController extends ChangeNotifier {
   }) async {
     final roomId = _activeRoomId;
     if (roomId == null) {
-      _errorNotifier.setError('No active chat room — please re-open the chat.');
+      _reportError('No active chat room — please re-open the chat.');
       return false;
     }
     try {
@@ -1373,7 +1496,7 @@ class ChatController extends ChangeNotifier {
       return true;
     } catch (e, s) {
       debugPrint('[ChatController] sendContact failed: $e\n$s');
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       return false;
     }
   }
@@ -1435,7 +1558,7 @@ class ChatController extends ChangeNotifier {
         ),
       );
       debugPrint('[ChatController] sendOptimisticTextMessage failed: $e\n$s');
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       notifyListeners();
     }
   }
@@ -1632,7 +1755,7 @@ class ChatController extends ChangeNotifier {
     try {
       await _threadPreferencesStore.setMuted(normalizedRoomId, muted);
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     }
   }
@@ -1655,7 +1778,7 @@ class ChatController extends ChangeNotifier {
     try {
       await _threadPreferencesStore.setPinned(normalizedRoomId, pinned);
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     }
   }
@@ -1676,7 +1799,7 @@ class ChatController extends ChangeNotifier {
     try {
       await _threadPreferencesStore.setForcedUnread(normalizedRoomId, true);
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     }
   }
@@ -1693,7 +1816,7 @@ class ChatController extends ChangeNotifier {
       try {
         await _threadPreferencesStore.setForcedUnread(normalizedRoomId, false);
       } catch (e) {
-        _errorNotifier.setError(e.toString());
+        _reportError(e.toString());
         rethrow;
       }
     }
@@ -1729,7 +1852,7 @@ class ChatController extends ChangeNotifier {
       await loadThreads();
       _errorNotifier.clear();
     } catch (e) {
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       rethrow;
     } finally {
       _setLoading(false);
@@ -1865,16 +1988,16 @@ class ChatController extends ChangeNotifier {
         final upper = error.toString().toUpperCase();
         if (upper.contains('M_LIMIT_EXCEEDED') ||
             upper.contains('TOO MANY REQUESTS')) {
-          _errorNotifier.setError(
+          _reportError(
             'Delete for everyone is rate-limited right now. Removed locally instead.',
           );
         } else if (upper.contains('M_NOT_FOUND') ||
             upper.contains('HTTP 404')) {
-          _errorNotifier.setError(
+          _reportError(
             'Message was already removed on server. Hidden locally.',
           );
         } else {
-          _errorNotifier.setError(
+          _reportError(
             'Could not delete for everyone. Removed locally instead.',
           );
         }
@@ -2094,7 +2217,7 @@ class ChatController extends ChangeNotifier {
     final file = result.files.first;
     final bytes = file.bytes;
     if (bytes == null) {
-      _errorNotifier.setError('Selected file has no readable bytes.');
+      _reportError('Selected file has no readable bytes.');
       return;
     }
 
@@ -2170,7 +2293,7 @@ class ChatController extends ChangeNotifier {
       try {
         await openRoom(roomId, roomTitle: _activeRoomTitle);
       } catch (e) {
-        if (!_isTransientNetworkError(e)) _errorNotifier.setError(e.toString());
+        if (!_isTransientNetworkError(e)) _reportError(e.toString());
         notifyListeners();
       }
       return true;
@@ -2196,7 +2319,7 @@ class ChatController extends ChangeNotifier {
       return false;
     }
     if (sentCount < images.length) {
-      _errorNotifier.setError(
+      _reportError(
         'Uploaded $sentCount/${images.length} images. Some uploads failed.',
       );
     }
@@ -2208,7 +2331,7 @@ class ChatController extends ChangeNotifier {
     } catch (e) {
       // Images were successfully sent; room refresh is best-effort.
       if (!_isTransientNetworkError(e)) {
-        _errorNotifier.setError(e.toString());
+        _reportError(e.toString());
       }
       notifyListeners();
     }
@@ -2225,7 +2348,7 @@ class ChatController extends ChangeNotifier {
   }) async {
     final roomId = _activeRoomId;
     if (roomId == null) {
-      _errorNotifier.setError('No active chat room — please re-open the chat.');
+      _reportError('No active chat room — please re-open the chat.');
       return false;
     }
     try {
@@ -2261,7 +2384,7 @@ class ChatController extends ChangeNotifier {
       return true;
     } catch (e, s) {
       debugPrint('[ChatController] sendImageGallery failed: $e\n$s');
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       return false;
     }
   }
@@ -2292,7 +2415,7 @@ class ChatController extends ChangeNotifier {
     final file = result.files.first;
     final bytes = file.bytes;
     if (bytes == null || bytes.isEmpty) {
-      _errorNotifier.setError('Selected file has no readable bytes.');
+      _reportError('Selected file has no readable bytes.');
       return false;
     }
     if (!_validateUploadSize(bytes.lengthInBytes, file.name)) {
@@ -2320,7 +2443,7 @@ class ChatController extends ChangeNotifier {
   }) async {
     final roomId = _activeRoomId;
     if (roomId == null) {
-      _errorNotifier.setError('No active chat room — please re-open the chat.');
+      _reportError('No active chat room — please re-open the chat.');
       return false;
     }
     if (!_validateUploadSize(bytes.lengthInBytes, filename)) {
@@ -2366,7 +2489,7 @@ class ChatController extends ChangeNotifier {
       return true;
     } catch (e, s) {
       debugPrint('[ChatController] sendMedia failed: $e\n$s');
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       return false;
     }
   }
@@ -2394,7 +2517,7 @@ class ChatController extends ChangeNotifier {
       final source = compressed ?? File(path);
       final bytes = await source.readAsBytes();
       if (bytes.isEmpty) {
-        _errorNotifier.setError('The recorded video is empty.');
+        _reportError('The recorded video is empty.');
         return false;
       }
       final extension = compressed != null
@@ -2409,7 +2532,7 @@ class ChatController extends ChangeNotifier {
       );
     } catch (e, s) {
       debugPrint('[ChatController] sendCapturedVideo failed: $e\n$s');
-      _errorNotifier.setError(e.toString());
+      _reportError(e.toString());
       return false;
     } finally {
       final file = compressed;
@@ -2582,7 +2705,7 @@ class ChatController extends ChangeNotifier {
       _clearTransientNetworkErrorBanner();
     } catch (e) {
       if (!_isTransientNetworkError(e)) {
-        _errorNotifier.setError(e.toString());
+        _reportError(e.toString());
       }
     }
 
@@ -2601,21 +2724,21 @@ class ChatController extends ChangeNotifier {
         // may still be transitioning from an invite to a joined state, and the
         // periodic sync should not spam the error banner for this.
         if (!_isTransientNetworkError(e) && !_isMembershipError(e)) {
-          _errorNotifier.setError(e.toString());
+          _reportError(e.toString());
         }
       }
       try {
         _participants = await _matrixService.getRoomParticipants(roomId);
       } catch (e) {
         if (!_isTransientNetworkError(e)) {
-          _errorNotifier.setError(e.toString());
+          _reportError(e.toString());
         }
       }
       try {
         _typingUsers = await _matrixService.getTypingUsers(roomId);
       } catch (e) {
         if (!_isTransientNetworkError(e)) {
-          _errorNotifier.setError(e.toString());
+          _reportError(e.toString());
         }
       }
       try {
@@ -2677,9 +2800,14 @@ class ChatController extends ChangeNotifier {
         }
         debugPrint('sync refresh failed: $e');
         debugPrint('$st');
-        _errorNotifier.setError(e.toString());
+        _reportError(e.toString());
       }
     });
+
+    // A rejected access token stops the sync loop; sign in again rather than sit disconnected.
+    _sessionInvalidSubscription ??= _matrixService.sessionInvalidated.listen(
+      (_) => unawaited(_recoverMatrixSession()),
+    );
 
     await loadThreads(onProgress: _updateMatrixSyncProgress);
     _verificationSessions = _matrixService.getVerificationSessions();
@@ -2755,7 +2883,7 @@ class ChatController extends ChangeNotifier {
       return true;
     }
     final sizeMb = (sizeBytes / (1024 * 1024)).toStringAsFixed(1);
-    _errorNotifier.setError(
+    _reportError(
       '"$filename" is $sizeMb MB. Max upload size is 10 MB.',
     );
     return false;
@@ -2779,13 +2907,85 @@ class ChatController extends ChangeNotifier {
         text.contains('408');
   }
 
-  /// Returns true for Matrix membership errors (M_FORBIDDEN, M_UNKNOWN_TOKEN)
+  /// Reports an error to the user - except a rejected Matrix access token (M_UNKNOWN_TOKEN /
+  /// M_MISSING_TOKEN), which happens when a request beats the sign-in (e.g. opening a chat
+  /// notification on a cold start) or the token was revoked by another login for this device.
+  /// That one triggers a silent sign-in-and-resync instead, and only surfaces if those retries
+  /// all fail (see _recoverMatrixSession).
+  void _reportError(Object error) {
+    // Mid-recovery, an attempt's failure isn't final - the next retry may fix it, and the last
+    // one's error is reported by _recoverMatrixSession itself.
+    if (_sessionRecovery != null) return;
+    if (MatrixRestService.isInvalidTokenError(error)) {
+      if (_sessionRecovery == null && !_matrixConnecting) {
+        unawaited(_recoverMatrixSession());
+      }
+      return;
+    }
+    _errorNotifier.setError(error.toString());
+  }
+
+  /// Signs in to Matrix again (a new access token) and restarts sync, retrying a few times before
+  /// reporting a failure. Concurrent callers share one attempt. True once the session works.
+  Future<bool> _recoverMatrixSession() {
+    return _sessionRecovery ??= () async {
+      try {
+        if (_authService.currentUser == null) return false;
+        const delays = <Duration>[
+          Duration.zero,
+          Duration(seconds: 2),
+          Duration(seconds: 5),
+        ];
+        Object? lastError;
+        for (final delay in delays) {
+          if (_isDisposed) return false;
+          if (delay > Duration.zero) await Future<void>.delayed(delay);
+          try {
+            debugPrint('[ChatController] Matrix token rejected; signing in again');
+            await connectMatrixUsingProfile();
+            final roomId = _activeRoomId;
+            if (roomId != null && roomId.isNotEmpty) {
+              openRoomInBackground(roomId, roomTitle: _activeRoomTitle);
+            }
+            return true;
+          } catch (e) {
+            lastError = e;
+          }
+        }
+        _errorNotifier.setError(
+          lastError != null
+              ? _describeError(lastError)
+              : 'Could not reconnect to chat.',
+        );
+        return false;
+      } finally {
+        _sessionRecovery = null;
+      }
+    }();
+  }
+
+  /// Waits (up to [timeout]) for the Matrix session to be signed in and done connecting, kicking
+  /// off the background connect if nothing has started it yet. True once connected.
+  Future<bool> _waitForMatrixConnection({
+    Duration timeout = const Duration(seconds: 45),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    unawaited(connectMatrixUsingProfileInBackground());
+    while (!_isDisposed && DateTime.now().isBefore(deadline)) {
+      if (matrixUserId.isNotEmpty && !_matrixConnecting) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    return !_isDisposed && matrixUserId.isNotEmpty && !_matrixConnecting;
+  }
+
+  /// Returns true for Matrix membership errors (M_FORBIDDEN)
   /// that indicate the current user is not (yet) a member of the room.
   /// These are timing-related during invite→join transitions and should not
   /// be surfaced to the user or retried indefinitely.
   bool _isMembershipError(Object error) {
-    final text = error.toString();
-    return text.contains('M_FORBIDDEN') || text.contains('M_UNKNOWN_TOKEN');
+    // A rejected token (M_UNKNOWN_TOKEN) used to be silenced here too, which left the chat
+    // signed out for good; _reportError now recovers the session for it instead.
+    return error.toString().contains('M_FORBIDDEN');
   }
 
   void _clearTransientNetworkErrorBanner() {
@@ -2833,6 +3033,7 @@ class ChatController extends ChangeNotifier {
     _isDisposed = true;
     _backgroundConnectRetryTimer?.cancel();
     _syncSubscription?.cancel();
+    _sessionInvalidSubscription?.cancel();
     super.dispose();
   }
 }

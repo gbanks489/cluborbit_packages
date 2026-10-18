@@ -468,6 +468,23 @@ class MatrixLowLevelClient implements MatrixTransportClient {
     );
   }
 
+  @override
+  Future<void> setRoomStateEvent(
+    String roomId,
+    String eventType,
+    Map<String, dynamic> content, {
+    String stateKey = '',
+  }) async {
+    final encodedType = Uri.encodeComponent(eventType);
+    final encodedKey = Uri.encodeComponent(stateKey);
+    await _requestJson(
+      method: 'PUT',
+      uri: _clientUri('/rooms/$roomId/state/$encodedType/$encodedKey'),
+      headers: _authHeaders(),
+      body: jsonEncode(content),
+    );
+  }
+
   Future<void> setRoomAvatar(String roomId, String mxcUrl) async {
     await _requestJson(
       method: 'PUT',

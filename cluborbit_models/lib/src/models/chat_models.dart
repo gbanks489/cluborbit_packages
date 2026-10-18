@@ -166,3 +166,39 @@ class ChatMessage {
     );
   }
 }
+
+/// A file an admin posted to a chat's details (its "Files" section) - kept in the room's
+/// `org.cluborbit.files` state event, so it stays put instead of scrolling away in the chat.
+class ChatRoomFile {
+  const ChatRoomFile({
+    required this.id,
+    required this.name,
+    required this.mxcUrl,
+    this.downloadUrl,
+    this.mimeType,
+    this.size,
+    this.senderId,
+    this.postedAt,
+  });
+
+  final String id;
+  final String name;
+  final String mxcUrl;
+
+  /// http(s) URL for fetching the file (via ChatController.resolveMediaBytes).
+  final String? downloadUrl;
+  final String? mimeType;
+  final int? size;
+  final String? senderId;
+  final DateTime? postedAt;
+
+  Map<String, dynamic> toStateJson() => <String, dynamic>{
+    'id': id,
+    'name': name,
+    'url': mxcUrl,
+    if (mimeType != null) 'mimetype': mimeType,
+    if (size != null) 'size': size,
+    if (senderId != null) 'sender': senderId,
+    if (postedAt != null) 'ts': postedAt!.millisecondsSinceEpoch,
+  };
+}

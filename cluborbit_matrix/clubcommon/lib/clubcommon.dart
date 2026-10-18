@@ -5,6 +5,7 @@ export 'src/theme/club_orbit_palette.dart';
 export 'src/theme/playerui_theme.dart';
 export 'src/theme/themed_svg.dart';
 export 'src/utils/auth_state_cache.dart';
+export 'src/utils/contact_picker.dart';
 export 'src/utils/error_notifier.dart';
 export 'src/utils/utils.dart';
 

@@ -273,15 +273,33 @@ class _StructuredContactCard extends StatelessWidget {
         .toSet()
         .toList(growable: false);
 
-    final prefilled = Contact(
-      displayName: displayName,
-      name: Name(first: displayName),
-      phones: phones.map((phone) => Phone(phone)).toList(growable: false),
-      emails: emails.map((email) => Email(email)).toList(growable: false),
-    );
+    // A vCard handed to the phone (its Contacts app saves it) - no contacts permission.
+    String esc(String v) => v
+        .replaceAll(r'\', r'\\')
+        .replaceAll(';', r'\;')
+        .replaceAll(',', r'\,')
+        .replaceAll('\n', r'\n');
+    final vcard = StringBuffer()
+      ..writeln('BEGIN:VCARD')
+      ..writeln('VERSION:3.0')
+      ..writeln('FN:${esc(displayName)}')
+      ..writeln('N:;${esc(displayName)};;;');
+    for (final phone in phones) {
+      vcard.writeln('TEL;TYPE=CELL:${esc(phone)}');
+    }
+    for (final email in emails) {
+      vcard.writeln('EMAIL:${esc(email)}');
+    }
+    vcard.writeln('END:VCARD');
 
     try {
-      await FlutterContacts.openExternalInsert(prefilled);
+      final dir = await getTemporaryDirectory();
+      final safeName = displayName.replaceAll(RegExp(r'[^A-Za-z0-9 _-]'), '').trim();
+      final file = File('${dir.path}/${safeName.isEmpty ? 'contact' : safeName}.vcf');
+      await file.writeAsString(vcard.toString());
+      await SharePlus.instance.share(
+        ShareParams(files: [XFile(file.path, mimeType: 'text/x-vcard')], title: displayName),
+      );
     } catch (_) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

@@ -282,6 +282,21 @@ class MatrixRestService {
 
   Stream<void> get syncUpdates => _syncUpdates.stream;
 
+  /// Fires when the homeserver rejects this session's access token (M_UNKNOWN_TOKEN /
+  /// M_MISSING_TOKEN) - e.g. after another login for the same device revoked it. The sync loop
+  /// stops (retrying with a dead token can never succeed); the owner should sign in again.
+  Stream<void> get sessionInvalidated => _sessionInvalidated.stream;
+  final StreamController<void> _sessionInvalidated =
+      StreamController<void>.broadcast();
+
+  /// True for errors meaning the access token itself was rejected (not a network problem).
+  static bool isInvalidTokenError(Object error) {
+    final text = error.toString().toUpperCase();
+    return text.contains('M_UNKNOWN_TOKEN') ||
+        text.contains('M_MISSING_TOKEN') ||
+        text.contains('INVALID ACCESS TOKEN');
+  }
+
   /// Returns the in-memory thread cache as updated by the sync loop.
   /// Use this instead of [getJoinedThreads] when you only need the latest
   /// known state without triggering an extra /sync round-trip.
@@ -1209,6 +1224,29 @@ class MatrixRestService {
 
     _emitSyncUpdate();
     return confirmedJoined;
+  }
+
+  /// Shares this device's room key with every member of an encrypted room ahead of the first
+  /// message, so a chat set up for the user (e.g. with an event's organizers) is ready to use the
+  /// moment it opens. Waits for crypto startup if it's still running. Returns false when the room
+  /// isn't encrypted or this device can't encrypt yet - sending then prepares the room itself.
+  Future<bool> prepareRoomEncryption(String roomId) async {
+    await initialize();
+    if (_cryptoService?.isReady != true && !_cryptoInitDone.isCompleted) {
+      try {
+        await _cryptoInitDone.future.timeout(const Duration(seconds: 20));
+      } catch (_) {}
+    }
+    final cryptoService = _cryptoService;
+    if (cryptoService == null || !cryptoService.isReady) return false;
+    _roomEncryptedCache.remove(roomId);
+    if (!await _isRoomEncrypted(roomId)) return false;
+    final participants = await getRoomParticipants(roomId, forceRefresh: true);
+    await cryptoService.prepareRoomForEncryption(
+      roomId,
+      participants.map((p) => p.userId).toList(growable: false),
+    );
+    return true;
   }
 
   Future<String> resolveRoomId(String roomIdOrAlias) async {
@@ -3399,6 +3437,95 @@ class MatrixRestService {
     return avatarUrl;
   }
 
+  /// State event holding the files admins posted to a chat's details.
+  static const String roomFilesEventType = 'org.cluborbit.files';
+
+  /// The files posted to a room's details, newest first. Empty when there are none.
+  Future<List<ChatRoomFile>> getRoomFiles(String roomId) async {
+    await initialize();
+    Map<String, dynamic> content;
+    try {
+      content = await _core.getRoomStateEvent(roomId, roomFilesEventType);
+    } catch (e) {
+      if (e.toString().contains('M_NOT_FOUND')) return const <ChatRoomFile>[];
+      rethrow;
+    }
+    final files = <ChatRoomFile>[];
+    for (final raw in _asList(content['files'])) {
+      final item = _asMap(raw);
+      final mxc = (item['url'] ?? '').toString();
+      final id = (item['id'] ?? '').toString();
+      if (mxc.isEmpty || id.isEmpty) continue;
+      final ts = item['ts'];
+      files.add(
+        ChatRoomFile(
+          id: id,
+          name: (item['name'] ?? 'File').toString(),
+          mxcUrl: mxc,
+          downloadUrl: _mxcToDownloadHttp(mxc),
+          mimeType: item['mimetype']?.toString(),
+          size: item['size'] is num ? (item['size'] as num).toInt() : null,
+          senderId: item['sender']?.toString(),
+          postedAt: ts is num
+              ? DateTime.fromMillisecondsSinceEpoch(ts.toInt())
+              : null,
+        ),
+      );
+    }
+    files.sort(
+      (a, b) => (b.postedAt ?? DateTime(0)).compareTo(a.postedAt ?? DateTime(0)),
+    );
+    return files;
+  }
+
+  /// Uploads a file and adds it to the room's details. Needs power to send state events (room
+  /// admins), which the homeserver enforces.
+  Future<void> addRoomFile({
+    required String roomId,
+    required List<int> bytes,
+    required String filename,
+    String? mimeType,
+  }) async {
+    await initialize();
+    final type = mimeType ?? _mimeTypeFromFileName(filename);
+    final mxc = await _core.uploadMedia(
+      bytes: bytes,
+      filename: filename,
+      mimeType: type,
+    );
+    if (mxc.trim().isEmpty) {
+      throw StateError('The file upload returned no address.');
+    }
+    final existing = await getRoomFiles(roomId);
+    final added = ChatRoomFile(
+      id: '${DateTime.now().microsecondsSinceEpoch}',
+      name: filename,
+      mxcUrl: mxc,
+      mimeType: type,
+      size: bytes.length,
+      senderId: _core.currentUserId,
+      postedAt: DateTime.now(),
+    );
+    await _core.setRoomStateEvent(roomId, roomFilesEventType, <String, dynamic>{
+      'files': [added, ...existing].map((f) => f.toStateJson()).toList(),
+    });
+  }
+
+  /// Removes a file from the room's details (admins only, as above).
+  Future<void> removeRoomFile({
+    required String roomId,
+    required String fileId,
+  }) async {
+    await initialize();
+    final remaining = (await getRoomFiles(roomId))
+        .where((f) => f.id != fileId)
+        .map((f) => f.toStateJson())
+        .toList();
+    await _core.setRoomStateEvent(roomId, roomFilesEventType, <String, dynamic>{
+      'files': remaining,
+    });
+  }
+
   Future<ChatEncryptionStatus> getRoomEncryptionStatus(String roomId) async {
     await initialize();
     final stateEvents = await _core.getStateEvents(roomId);
@@ -3694,6 +3821,7 @@ class MatrixRestService {
       _core.dispose();
     }
     await _syncUpdates.close();
+    await _sessionInvalidated.close();
     await _callUpdates.close();
     await _callMediaUpdates.close();
   }
@@ -3722,10 +3850,21 @@ class MatrixRestService {
         break;
       }
       if (!succeeded) {
+        if (_lastSyncTokenRejected) {
+          // Every further poll would be rejected too: stop and let the owner sign in again.
+          _lastSyncTokenRejected = false;
+          if (generation == _syncLoopGeneration) {
+            _stopSyncLoop();
+            if (!_sessionInvalidated.isClosed) _sessionInvalidated.add(null);
+          }
+          break;
+        }
         await Future<void>.delayed(_syncRetryDelay);
       }
     }
   }
+
+  bool _lastSyncTokenRejected = false;
 
   Future<bool> _refreshSync({
     required bool fullState,
@@ -3770,10 +3909,11 @@ class MatrixRestService {
         _emitSyncUpdate();
       }
       return true;
-    } catch (_) {
+    } catch (error) {
       _perfLog('_refreshSync.error', stopwatch, <String, Object?>{
         'fullState': fullState,
       }, true);
+      _lastSyncTokenRejected = isInvalidTokenError(error);
       // Keep the sync loop resilient to transient network issues.
       return false;
     }

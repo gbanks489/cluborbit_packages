@@ -594,58 +594,29 @@ class _ContactAttachmentSheetState extends State<_ContactAttachmentSheet> {
     });
 
     try {
-      final granted = await FlutterContacts.requestPermission(readonly: true);
-      if (!granted) {
-        if (mounted) {
-          setState(() {
-            _loading = false;
-            _errorMessage = 'Contacts permission was denied.';
-          });
-        }
-        return;
-      }
-
-      final contact = await FlutterContacts.openExternalPick();
+      // The phone's own picker: no contacts permission, and only the picked contact is seen
+      // (its name and numbers).
+      // (iOS: the whole contact; Android: its name and the picked number.)
+      final picked = await ContactPicker.pick();
       if (!mounted) return;
 
-      if (contact == null) {
+      if (picked.isEmpty) {
         setState(() => _loading = false);
         return;
       }
 
-      // Fetch full contact details
-      final full = await FlutterContacts.getContact(
-        contact.id,
-        withProperties: true,
-        withThumbnail: true,
-        withPhoto: true,
-      );
-      if (!mounted) return;
-
-      final name = full?.displayName ?? contact.displayName;
-      final phones = (full?.phones ?? contact.phones)
-          .map((p) => p.number)
-          .where((n) => n.isNotEmpty)
-          .toList();
-      final emails = (full?.emails ?? contact.emails)
-          .map((e) => e.address)
-          .where((a) => a.isNotEmpty)
-          .toList();
+      final contact = picked.first;
+      final name = contact.name;
+      final phones = contact.phones;
+      final emails = contact.emails;
 
       final lines = <String>['[Contact]'];
-      lines.add('ContactId: ${full?.id ?? contact.id}');
       if (name.isNotEmpty) lines.add('Name: $name');
       for (final phone in phones) {
         lines.add('Phone: $phone');
       }
       for (final email in emails) {
         lines.add('Email: $email');
-      }
-
-      final avatarBytes =
-          full?.thumbnail ?? full?.photo ?? contact.thumbnail ?? contact.photo;
-      if (avatarBytes != null && avatarBytes.isNotEmpty) {
-        lines.add('AvatarBase64: ${base64Encode(avatarBytes)}');
       }
 
       if (name.isEmpty) {

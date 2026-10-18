@@ -402,15 +402,12 @@ class UserProfileService {
     }
   }
 
+  /// Any 401 is worth one retry with a freshly fetched Firebase token: besides "ID token has
+  /// expired", the server answers "Missing or invalid Authorization header" when the request went
+  /// out before Firebase had a token ready (e.g. a cold start from a notification) - previously
+  /// that wasn't retried and surfaced as an invalid-token error.
   bool _isExpiredAuthResponse(http.Response response) {
-    if (response.statusCode != 401) {
-      return false;
-    }
-
-    final body = response.body.toLowerCase();
-    return body.contains('id token has expired') ||
-        body.contains('verify-id-tokens') ||
-        body.contains('firebase');
+    return response.statusCode == 401;
   }
 
   Future<void> _appendAppLog(String message) async {

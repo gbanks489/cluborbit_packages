@@ -248,6 +248,21 @@ class MatrixRustCryptoTransportClient implements MatrixTransportClient {
   }
 
   @override
+  Future<void> setRoomStateEvent(
+    String roomId,
+    String eventType,
+    Map<String, dynamic> content, {
+    String stateKey = '',
+  }) {
+    return _fallback.setRoomStateEvent(
+      roomId,
+      eventType,
+      content,
+      stateKey: stateKey,
+    );
+  }
+
+  @override
   Future<void> setHttpPusher({
     required String pushKey,
     required String appId,

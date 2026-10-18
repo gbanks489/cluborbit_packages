@@ -97,6 +97,14 @@ abstract class MatrixTransportClient {
   Future<void> leaveRoom(String roomId);
   Future<void> setRoomAvatar(String roomId, String mxcUrl);
 
+  /// Sends (replaces) a room state event - only room members with enough power may.
+  Future<void> setRoomStateEvent(
+    String roomId,
+    String eventType,
+    Map<String, dynamic> content, {
+    String stateKey = '',
+  });
+
   Future<void> setHttpPusher({
     required String pushKey,
     required String appId,

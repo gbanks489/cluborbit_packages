@@ -113,8 +113,8 @@ class _AccentColorMapper extends ColorMapper {
 }
 
 /// An icon on a disc in the theme's card colour, in the accent - the profile menu's and the
-/// profile page's style. With [color] (e.g. Logout's red) it's an outlined ring in that colour
-/// instead, so it stands apart.
+/// profile page's style. With [color] (e.g. Logout's red) the disc is a pale tint of that colour
+/// and the glyph is the colour itself - same shape as the others, no outline - so it stands apart.
 class ThemedIconDisc extends StatelessWidget {
   const ThemedIconDisc({required this.child, this.size = 40, this.color, super.key});
 
@@ -137,7 +137,7 @@ class ThemedIconDisc extends StatelessWidget {
   final Widget child;
   final double size;
 
-  /// The ring and glyph colour for an outlined icon; null for the themed disc.
+  /// The glyph colour, with a pale tint of it as the disc; null for the themed disc.
   final Color? color;
 
   @override
@@ -149,8 +149,7 @@ class ThemedIconDisc extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: color == null ? palette.surface : null,
-        border: color == null ? null : Border.all(color: color!, width: 2),
+        color: color == null ? palette.surface : color!.withValues(alpha: 0.15),
       ),
       child: child,
     );

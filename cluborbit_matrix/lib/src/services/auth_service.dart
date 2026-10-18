@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:clubcommon/clubcommon.dart' show AuthStateCache, ErrorNotifier;
@@ -37,7 +38,10 @@ class AuthService {
       return null;
     }
 
-    if (!forceRefresh && (_cachedToken?.isNotEmpty ?? false)) {
+    // Reuse the cached token only while it's still good: it lives across app resumes, so after
+    // a while in the background (e.g. opening a notification hours later) it has expired, and
+    // sending it made the first request fail with an invalid-token error.
+    if (!forceRefresh && _isFresh(_cachedToken)) {
       return _cachedToken;
     }
 
@@ -117,6 +121,24 @@ class AuthService {
     cacheAppVersions();
     await _googleSignIn.signOut();
     await _auth.signOut();
+  }
+
+  /// True when [token] is a JWT that won't expire in the next 5 minutes.
+  static bool _isFresh(String? token) {
+    if (token == null || token.isEmpty) return false;
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return false;
+      final payload = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))),
+      );
+      final exp = payload is Map ? payload['exp'] : null;
+      if (exp is! num) return false;
+      final expiresAt = DateTime.fromMillisecondsSinceEpoch(exp.toInt() * 1000);
+      return expiresAt.isAfter(DateTime.now().add(const Duration(minutes: 5)));
+    } catch (_) {
+      return false;
+    }
   }
 
   void _setCachedToken(String? token) {

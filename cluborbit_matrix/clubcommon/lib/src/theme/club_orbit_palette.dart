@@ -184,7 +184,8 @@ class ClubOrbitPalette extends ThemeExtension<ClubOrbitPalette> {
     sunrise,
   ];
 
-  static const ClubOrbitPalette fallback = navy;
+  // Light (the white theme) until the user picks another.
+  static const ClubOrbitPalette fallback = light;
 
   /// The app's current palette, for code without a BuildContext to look it up (e.g. the chat
   /// packages' PlayerUiSignalTheme colours). Kept in step with the theme by the app.
@@ -193,7 +194,7 @@ class ClubOrbitPalette extends ThemeExtension<ClubOrbitPalette> {
   static ClubOrbitPalette byId(String? id) =>
       all.firstWhere((p) => p.id == id, orElse: () => fallback);
 
-  /// The palette of the app's current theme (Navy when none is set, e.g. in a test).
+  /// The palette of the app's current theme (Light when none is set, e.g. in a test).
   static ClubOrbitPalette of(BuildContext context) =>
       Theme.of(context).extension<ClubOrbitPalette>() ?? fallback;
 
