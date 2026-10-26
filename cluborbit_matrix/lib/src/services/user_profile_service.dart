@@ -177,7 +177,10 @@ class UserProfileService {
       return profile;
     }
 
-    final payload = profile.toJson();
+    // Through JSON and back, so nested objects (profilePic, memberships ...) are plain maps:
+    // toJson() keeps them as objects, which User.fromJson can't read back (it expects maps) -
+    // that threw here, the profile never loaded, and the chat's avatar showed only an initial.
+    final payload = jsonDecode(jsonEncode(profile.toJson())) as Map<String, dynamic>;
     payload['coverPicUrl'] = coverUrl;
 
     final profilePic = payload['profilePic'];
